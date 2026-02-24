@@ -1,0 +1,19 @@
+# Ignore Dataset Files (Too heavy for Git)
+*.csv
+*.txt
+*.zip
+*.rar
+01_Data_Pipeline/01_Raw_Input/*
+
+# Ignore Trained Models (Too heavy)
+*.h5
+*.pkl
+*.model
+
+# Ignore Python Cache
+__pycache__/
+*.ipynb_checkpoints/
+
+# Ignore Virtual Environment
+venv/
+env/
