@@ -1,32 +1,34 @@
-@'
-# Python Cache amd Compiled files
+# 1. SECURITY (NEVER UPLOAD THESE)
+.env
+*.env
+secret_keys.txt
+*.pem
+
+# 2. PYTHON & AI LOGIC
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Virtual Environment
 .venv/
 venv/
 env/
-ENV/
 
-# Packaging/build
+# 3. MACHINE LEARNING (Huge files)
+*.h5
+*.pkl
+*.pt
+.ipynb_checkpoints/
+data/*.csv
+data/*.txt
+
+# 4. FRONTEND (Mayank's workspace)
+node_modules/
 build/
 dist/
-*.egg-info/
 
-# Jupyter
-.ipynb_checkpoints/
-
-# IDE/OS files
+# 5. OS & IDE MESS (Hidden files)
 .vscode/
 .DS_Store
 Thumbs.db
 
-#logs
-*.log
-
-# Ignore large raw data files in data folder
-data/*.csv
-data/*.txt
-'@ | Set-Content .gitignore
+# 6. AI WORKSPACE LOGS
+.github/context/
+.cursor/
