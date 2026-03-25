@@ -1,19 +1,32 @@
-# Ignore Dataset Files (Too heavy for Git)
-*.csv
-*.txt
-*.zip
-*.rar
-01_Data_Pipeline/01_Raw_Input/*
-
-# Ignore Trained Models (Too heavy)
-*.h5
-*.pkl
-*.model
-
-# Ignore Python Cache
+@'
+# Python Cache amd Compiled files
 __pycache__/
-*.ipynb_checkpoints/
+*.py[cod]
+*$py.class
 
-# Ignore Virtual Environment
+# Virtual Environment
+.venv/
 venv/
 env/
+ENV/
+
+# Packaging/build
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/OS files
+.vscode/
+.DS_Store
+Thumbs.db
+
+#logs
+*.log
+
+# Ignore large raw data files in data folder
+data/*.csv
+data/*.txt
+'@ | Set-Content .gitignore
