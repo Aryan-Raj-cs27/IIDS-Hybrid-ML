@@ -11,13 +11,17 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+import secrets
 from datetime import datetime, timezone
+from functools import wraps
+from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session
 from tensorflow.keras.models import load_model
+from werkzeug.security import check_password_hash, generate_password_hash
 
 
 # -----------------------------------------------------------------------------
@@ -31,6 +35,18 @@ MODEL_DIR = os.path.abspath(os.path.join(PROJECT_ROOT, "model"))
 FRONTEND_DIR = os.path.abspath(os.path.join(PROJECT_ROOT, "frontend"))
 DATA_PATH = os.path.abspath(os.path.join(PROJECT_ROOT, "data", "KDDTrain+_20Percent.txt"))
 DB_PATH = os.path.abspath(os.path.join(PROJECT_ROOT, "iids_forensics.db"))
+DEFAULT_ENGINE_MODE = "hybrid"
+ENGINE_MODES = {"hybrid", "rf_only", "cnn_only"}
+DEFAULT_THEME = "dark"
+DEFAULT_ALERT_THRESHOLD = 0.85
+DEFAULT_ADMIN_USERNAME = os.environ.get("IIDS_ADMIN_USERNAME", "admin")
+DEFAULT_ADMIN_PASSWORD = os.environ.get("IIDS_ADMIN_PASSWORD", "password")
+DEFAULT_ADMIN_PASSWORD_HASH = os.environ.get(
+	"IIDS_ADMIN_PASSWORD_HASH",
+	generate_password_hash(DEFAULT_ADMIN_PASSWORD),
+)
+CONFIDENCE_THRESHOLD = DEFAULT_ALERT_THRESHOLD
+MAX_UPLOAD_ROWS = 50000
 
 if PROJECT_ROOT not in sys.path:
 	sys.path.insert(0, PROJECT_ROOT)
@@ -42,6 +58,11 @@ if PROJECT_ROOT not in sys.path:
 # The frontend folder serves double duty here: it is used for templates and for
 # static assets so index.html can be rendered directly from the project UI.
 app = Flask(__name__, template_folder=FRONTEND_DIR, static_folder=FRONTEND_DIR)
+app.config["SECRET_KEY"] = os.environ.get("IIDS_SECRET_KEY") or secrets.token_urlsafe(32)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("FLASK_ENV", "development").lower() == "production"
 
 
 # -----------------------------------------------------------------------------
@@ -156,6 +177,7 @@ sample_scaled_features = None
 sample_protocol_types = None
 models_loaded = False
 sample_data_loaded = False
+active_engine = DEFAULT_ENGINE_MODE
 
 
 def load_sample_data() -> tuple[np.ndarray, np.ndarray]:
@@ -190,14 +212,13 @@ def load_sample_data() -> tuple[np.ndarray, np.ndarray]:
 	raw_protocol_types = sample_frame["protocol_type"].astype(str).to_numpy()
 
 	# Apply the exact same NSL-KDD attack grouping used during training.
+	raw_labels = sample_frame["label"].astype(str)
 	sample_frame["label"] = (
-		sample_frame["label"].astype(str).str.strip().str.lower().map(ATTACK_MAP)
+		raw_labels.str.strip().str.lower().map(ATTACK_MAP)
 	)
 
 	if sample_frame["label"].isna().any():
-		unknown_labels = sorted(
-			sample_frame.loc[sample_frame["label"].isna(), "label"].astype(str).unique()
-		)
+		unknown_labels = sorted(raw_labels[sample_frame["label"].isna()].unique())
 		raise ValueError(f"Unmapped NSL-KDD labels found in sample pool: {unknown_labels}")
 
 	# Separate the inputs from the target label. The live feed only needs features.
@@ -238,6 +259,307 @@ def decode_class_index(class_index: int) -> str:
 	return CLASS_NAMES[class_index]
 
 
+def get_numeric_setting(setting_key: str, default: float) -> float:
+	"""Read a numeric setting from SQLite and normalize it to float."""
+
+	try:
+		return float(get_setting(setting_key, str(default)))
+	except (TypeError, ValueError):
+		return float(default)
+
+
+def get_alert_threshold() -> float:
+	"""Return the persisted alert threshold used by hybrid routing."""
+
+	threshold = get_numeric_setting("alert_threshold", DEFAULT_ALERT_THRESHOLD)
+	return max(0.0, min(1.0, threshold))
+
+
+def is_authenticated() -> bool:
+	"""Return whether the current session is authenticated."""
+
+	return bool(session.get("authenticated"))
+
+
+def require_authentication(view_func):
+	"""Protect API routes with a JSON 401 response."""
+
+	@wraps(view_func)
+	def wrapper(*args, **kwargs):
+		if not is_authenticated():
+			return jsonify({"status": "error", "message": "Authentication required."}), 401
+		return view_func(*args, **kwargs)
+
+	return wrapper
+
+
+def verify_admin_credentials(username: str, password: str) -> bool:
+	"""Verify a login against the persisted admin credentials."""
+
+	stored_username = get_setting("admin_username", DEFAULT_ADMIN_USERNAME)
+	stored_password_hash = get_setting("admin_password_hash", DEFAULT_ADMIN_PASSWORD_HASH)
+	return username == stored_username and check_password_hash(stored_password_hash, password)
+
+
+def update_runtime_settings(payload: dict[str, Any]) -> dict[str, Any]:
+	"""Validate and persist dashboard settings coming from the UI."""
+
+	updates: dict[str, Any] = {}
+
+	if "engine" in payload:
+		updates["engine"] = normalize_engine(str(payload["engine"]))
+		set_active_engine(updates["engine"])
+
+	if "theme" in payload:
+		theme = str(payload["theme"]).strip().lower()
+		if theme not in {"light", "dark"}:
+			raise ValueError("Theme must be 'light' or 'dark'.")
+		updates["theme"] = theme
+		set_setting("theme", theme)
+
+	if "alert_threshold" in payload:
+		try:
+			threshold = float(payload["alert_threshold"])
+		except (TypeError, ValueError) as exc:
+			raise ValueError("Alert threshold must be a number between 0 and 1.") from exc
+		if not 0.0 <= threshold <= 1.0:
+			raise ValueError("Alert threshold must be between 0 and 1.")
+		updates["alert_threshold"] = threshold
+		set_setting("alert_threshold", f"{threshold:.4f}")
+
+	return updates
+
+
+def normalize_engine(engine: str | None, fallback: str = DEFAULT_ENGINE_MODE) -> str:
+	"""Validate and normalize a routing engine selection."""
+
+	engine_value = (engine or fallback).strip().lower()
+	if engine_value not in ENGINE_MODES:
+		raise ValueError(f"Unsupported engine '{engine}'. Expected one of: {sorted(ENGINE_MODES)}")
+	return engine_value
+
+
+def get_request_engine(default: str | None = None) -> str:
+	"""Extract the engine from the current request in a consistent way."""
+
+	json_payload = request.get_json(silent=True) or {}
+	engine = request.args.get("engine") or request.form.get("engine") or json_payload.get("engine")
+	return normalize_engine(engine, fallback=default or active_engine)
+
+
+def get_db_connection() -> sqlite3.Connection:
+	"""Create a SQLite connection configured for the app's forensics workload."""
+
+	connection = sqlite3.connect(DB_PATH, timeout=10)
+	connection.row_factory = sqlite3.Row
+	connection.execute("PRAGMA foreign_keys = ON")
+	return connection
+
+
+def ensure_settings_table(connection: sqlite3.Connection) -> None:
+	"""Create the settings table used to persist runtime configuration."""
+
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS app_settings (
+			setting_key TEXT PRIMARY KEY,
+			setting_value TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)
+		"""
+	)
+
+
+def get_setting(setting_key: str, default: str = DEFAULT_ENGINE_MODE) -> str:
+	"""Read a persisted setting from SQLite."""
+
+	try:
+		with get_db_connection() as connection:
+			ensure_settings_table(connection)
+			cursor = connection.execute(
+				"SELECT setting_value FROM app_settings WHERE setting_key = ?",
+				(setting_key,),
+			)
+			row = cursor.fetchone()
+			if row is None:
+				return default
+			return str(row["setting_value"])
+	except sqlite3.Error:
+		return default
+
+
+def set_setting(setting_key: str, value: str) -> None:
+	"""Persist a runtime setting to SQLite."""
+
+	with get_db_connection() as connection:
+		ensure_settings_table(connection)
+		connection.execute(
+			"""
+			INSERT INTO app_settings (setting_key, setting_value, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(setting_key) DO UPDATE SET
+				setting_value = excluded.setting_value,
+				updated_at = excluded.updated_at
+			""",
+			(setting_key, value, datetime.now(timezone.utc).isoformat()),
+		)
+
+
+def set_active_engine(engine: str) -> str:
+	"""Update the in-memory and persisted engine configuration."""
+
+	global active_engine
+	active_engine = normalize_engine(engine)
+	set_setting("active_engine", active_engine)
+	return active_engine
+
+
+def get_active_engine() -> str:
+	"""Return the current engine preference, falling back to persistence."""
+
+	global active_engine
+	if active_engine not in ENGINE_MODES:
+		active_engine = DEFAULT_ENGINE_MODE
+	persisted_engine = get_setting("active_engine", active_engine)
+	active_engine = normalize_engine(persisted_engine, fallback=active_engine)
+	return active_engine
+
+
+def prepare_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
+	"""Validate and align a raw NSL-KDD feature frame for inference."""
+
+	if frame.empty:
+		raise ValueError("Uploaded data frame is empty.")
+
+	required_columns = [column for column in NSL_KDD_COLUMNS if column not in {"label", "difficulty"}]
+	missing_columns = [column for column in required_columns if column not in frame.columns]
+	if missing_columns:
+		raise ValueError(f"Missing required NSL-KDD columns: {missing_columns}")
+
+	unexpected_columns = sorted(
+		set(frame.columns) - set(required_columns) - {"label", "difficulty"}
+	)
+	if unexpected_columns:
+		raise ValueError(f"Unexpected columns present in upload: {unexpected_columns}")
+
+	clean_frame = frame.copy()
+	if "difficulty" in clean_frame.columns:
+		clean_frame = clean_frame.drop(columns=["difficulty"])
+	if "label" in clean_frame.columns:
+		clean_frame = clean_frame.drop(columns=["label"])
+
+	for column in ["protocol_type", "service", "flag"]:
+		clean_frame[column] = clean_frame[column].astype(str).str.strip().str.lower()
+
+	for column in [column for column in clean_frame.columns if column not in {"protocol_type", "service", "flag"}]:
+		clean_frame[column] = pd.to_numeric(clean_frame[column], errors="raise")
+
+	encoded_frame = pd.get_dummies(clean_frame, columns=["protocol_type", "service", "flag"], drop_first=False)
+	if feature_columns is not None:
+		encoded_frame = encoded_frame.reindex(columns=feature_columns, fill_value=0)
+	else:
+		encoded_frame = encoded_frame.reindex(
+			columns=list(getattr(scaler, "feature_names_in_", encoded_frame.columns)), fill_value=0
+		)
+
+	return encoded_frame
+
+
+def scale_uploaded_frame(frame: pd.DataFrame) -> np.ndarray:
+	"""Prepare uploaded data for model inference."""
+
+	if scaler is None:
+		raise RuntimeError("Scaler is unavailable.")
+	prepared_frame = prepare_feature_frame(frame)
+	return scaler.transform(prepared_frame)
+
+
+def reshape_for_cnn(row: np.ndarray) -> np.ndarray:
+	"""Reshape a 2D row set into the CNN-LSTM input tensor."""
+
+	if row.ndim == 1:
+		row = row.reshape(1, -1)
+	if row.ndim != 2:
+		raise ValueError(f"Expected a 1D or 2D array, received shape {row.shape}.")
+	return row.reshape(row.shape[0], row.shape[1], 1)
+
+
+def predict_row(row: np.ndarray, engine: str) -> tuple[int, str, float, float | None]:
+	"""Predict a single NSL-KDD sample using the selected engine."""
+
+	if rf_model is None or cnn_lstm_model is None:
+		raise RuntimeError("Model artifacts are unavailable.")
+
+	engine_mode = normalize_engine(engine)
+	if engine_mode == "cnn_only":
+		cnn_probabilities = cnn_lstm_model.predict(reshape_for_cnn(row), verbose=0)[0]
+		cnn_index = int(np.argmax(cnn_probabilities))
+		cnn_confidence = float(np.max(cnn_probabilities))
+		return cnn_index, "CNN-LSTM", cnn_confidence, None
+
+	rf_probabilities = rf_model.predict_proba(row.reshape(1, -1))[0]
+	rf_index = int(np.argmax(rf_probabilities))
+	rf_confidence = float(np.max(rf_probabilities))
+
+	if engine_mode == "rf_only" or rf_confidence >= get_alert_threshold():
+		return rf_index, "RF", rf_confidence, rf_confidence
+
+	cnn_probabilities = cnn_lstm_model.predict(reshape_for_cnn(row), verbose=0)[0]
+	cnn_index = int(np.argmax(cnn_probabilities))
+	cnn_confidence = float(np.max(cnn_probabilities))
+	return cnn_index, "CNN-LSTM", cnn_confidence, rf_confidence
+
+
+def predict_batch(scaled_data: np.ndarray, engine: str) -> list[dict[str, Any]]:
+	"""Predict a batch of samples using the requested engine mode."""
+
+	results: list[dict[str, Any]] = []
+	engine_mode = normalize_engine(engine)
+
+	if engine_mode == "rf_only":
+		probabilities = rf_model.predict_proba(scaled_data)
+		for row_probabilities in probabilities:
+			predicted_index = int(np.argmax(row_probabilities))
+			confidence = float(np.max(row_probabilities))
+			results.append(
+				{
+					"predicted_index": predicted_index,
+					"model_used": "RF",
+					"confidence": confidence,
+					"rf_confidence": confidence,
+				}
+			)
+		return results
+
+	if engine_mode == "cnn_only":
+		probabilities = cnn_lstm_model.predict(reshape_for_cnn(scaled_data), verbose=0)
+		for row_probabilities in probabilities:
+			predicted_index = int(np.argmax(row_probabilities))
+			confidence = float(np.max(row_probabilities))
+			results.append(
+				{
+					"predicted_index": predicted_index,
+					"model_used": "CNN-LSTM",
+					"confidence": confidence,
+					"rf_confidence": None,
+				}
+			)
+		return results
+
+	for row in scaled_data:
+		predicted_index, model_used, confidence, rf_confidence = predict_row(row, engine_mode)
+		results.append(
+			{
+				"predicted_index": predicted_index,
+				"model_used": model_used,
+				"confidence": confidence,
+				"rf_confidence": rf_confidence,
+			}
+		)
+
+	return results
+
+
 # -----------------------------------------------------------------------------
 # Database initialization and forensic logging
 # -----------------------------------------------------------------------------
@@ -250,51 +572,80 @@ def init_db():
 	"""
 
 	try:
-		conn = sqlite3.connect(DB_PATH)
-		cursor = conn.cursor()
-
-		cursor.execute(
-			"""
-			CREATE TABLE IF NOT EXISTS alerts (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				timestamp TEXT NOT NULL,
-				source_ip TEXT NOT NULL,
-				protocol TEXT NOT NULL,
-				classification TEXT NOT NULL,
-				confidence REAL NOT NULL,
-				model_used TEXT NOT NULL
+		with get_db_connection() as conn:
+			ensure_settings_table(conn)
+			conn.execute(
+				"""
+				CREATE TABLE IF NOT EXISTS alerts (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					timestamp TEXT NOT NULL,
+					source_ip TEXT NOT NULL,
+					protocol TEXT NOT NULL,
+					classification TEXT NOT NULL,
+					confidence REAL NOT NULL,
+					model_used TEXT NOT NULL
+				)
+				"""
 			)
-			"""
-		)
-
-		conn.commit()
+			conn.execute(
+				"""
+				INSERT INTO app_settings (setting_key, setting_value, updated_at)
+				VALUES (?, ?, ?)
+				ON CONFLICT(setting_key) DO NOTHING
+				""",
+				("active_engine", DEFAULT_ENGINE_MODE, datetime.now(timezone.utc).isoformat()),
+			)
+			conn.execute(
+				"""
+				INSERT INTO app_settings (setting_key, setting_value, updated_at)
+				VALUES (?, ?, ?)
+				ON CONFLICT(setting_key) DO NOTHING
+				""",
+				("theme", DEFAULT_THEME, datetime.now(timezone.utc).isoformat()),
+			)
+			conn.execute(
+				"""
+				INSERT INTO app_settings (setting_key, setting_value, updated_at)
+				VALUES (?, ?, ?)
+				ON CONFLICT(setting_key) DO NOTHING
+				""",
+				("alert_threshold", f"{DEFAULT_ALERT_THRESHOLD:.4f}", datetime.now(timezone.utc).isoformat()),
+			)
+			conn.execute(
+				"""
+				INSERT INTO app_settings (setting_key, setting_value, updated_at)
+				VALUES (?, ?, ?)
+				ON CONFLICT(setting_key) DO NOTHING
+				""",
+				("admin_username", DEFAULT_ADMIN_USERNAME, datetime.now(timezone.utc).isoformat()),
+			)
+			conn.execute(
+				"""
+				INSERT INTO app_settings (setting_key, setting_value, updated_at)
+				VALUES (?, ?, ?)
+				ON CONFLICT(setting_key) DO NOTHING
+				""",
+				("admin_password_hash", DEFAULT_ADMIN_PASSWORD_HASH, datetime.now(timezone.utc).isoformat()),
+			)
 		print(f"Database initialized at {DB_PATH}")
 	except Exception as exc:
 		print(f"Error initializing database: {exc}")
-	finally:
-		conn.close()
 
 
 def log_alert(timestamp: str, source_ip: str, protocol: str, classification: str, confidence: float, model_used: str):
 	"""Log a single prediction result to the forensics database."""
 
 	try:
-		conn = sqlite3.connect(DB_PATH)
-		cursor = conn.cursor()
-
-		cursor.execute(
-			"""
-			INSERT INTO alerts (timestamp, source_ip, protocol, classification, confidence, model_used)
-			VALUES (?, ?, ?, ?, ?, ?)
-			""",
-			(timestamp, source_ip, protocol, classification, confidence, model_used),
-		)
-
-		conn.commit()
+		with get_db_connection() as conn:
+			conn.execute(
+				"""
+				INSERT INTO alerts (timestamp, source_ip, protocol, classification, confidence, model_used)
+				VALUES (?, ?, ?, ?, ?, ?)
+				""",
+				(timestamp, source_ip, protocol, classification, confidence, model_used),
+			)
 	except Exception as exc:
 		print(f"Error logging alert to database: {exc}")
-	finally:
-		conn.close()
 
 
 # -----------------------------------------------------------------------------
@@ -311,15 +662,21 @@ try:
 	rf_model = joblib.load(rf_model_path)
 	cnn_lstm_model = load_model(cnn_lstm_model_path)
 	feature_columns = list(getattr(scaler, "feature_names_in_", [])) or None
-
-	# Build the live traffic pool after the scaler is available.
-	sample_scaled_features, sample_protocol_types = load_sample_data()
-
 	models_loaded = True
-	sample_data_loaded = True
-	print("Model artifacts and live sample pool loaded successfully.")
+	print("Model artifacts loaded successfully.")
 except Exception as exc:
 	print(f"Error loading backend artifacts: {exc}")
+
+if models_loaded:
+	try:
+		# Build the live traffic pool after the scaler is available.
+		sample_scaled_features, sample_protocol_types = load_sample_data()
+		sample_data_loaded = True
+		print("Live sample pool loaded successfully.")
+	except Exception as exc:
+		print(f"Error loading live sample pool: {exc}")
+
+active_engine = get_active_engine()
 
 # Initialize the forensics database on startup
 try:
@@ -347,25 +704,194 @@ def api_status():
 			"status": "online",
 			"models_loaded": models_loaded,
 			"sample_data_loaded": sample_data_loaded,
+			"active_engine": get_active_engine(),
+			"theme": get_setting("theme", DEFAULT_THEME),
+			"alert_threshold": get_alert_threshold(),
 			"message": "IIDS backend is running.",
 		}
 	)
 
 
+@app.route("/api/me", methods=["GET"])
+def api_me():
+	"""Return the current authentication and profile state."""
+
+	return jsonify(
+		{
+			"authenticated": is_authenticated(),
+			"username": session.get("username"),
+			"role": session.get("role", "admin"),
+			"theme": get_setting("theme", DEFAULT_THEME),
+			"active_engine": get_active_engine(),
+			"alert_threshold": get_alert_threshold(),
+		}
+	)
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+	"""Authenticate an admin user and start a secure session."""
+
+	payload = request.get_json(silent=True) or request.form or {}
+	username = str(payload.get("username", "")).strip()
+	password = str(payload.get("password", ""))
+
+	if not username or not password:
+		return jsonify({"status": "error", "message": "Username and password are required."}), 400
+
+	if not verify_admin_credentials(username, password):
+		return jsonify({"status": "error", "message": "Invalid credentials."}), 401
+
+	session.clear()
+	session["authenticated"] = True
+	session["username"] = username
+	session["role"] = "admin"
+	session["login_time"] = datetime.now(timezone.utc).isoformat()
+
+	return jsonify(
+		{
+			"status": "success",
+			"message": "Authenticated successfully.",
+			"user": {
+				"username": username,
+				"role": "admin",
+			},
+		}
+	)
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+	"""End the current authenticated session."""
+
+	session.clear()
+	return jsonify({"status": "success", "message": "Logged out."})
+
+
+@app.route("/api/profile", methods=["GET"])
+@require_authentication
+def api_profile():
+	"""Return a read-only admin profile and system summary."""
+
+	return jsonify(
+		{
+			"status": "success",
+			"profile": {
+				"username": session.get("username"),
+				"role": session.get("role", "admin"),
+				"login_time": session.get("login_time"),
+			},
+			"system": {
+				"project": "Intelligent Intrusion Detection System",
+				"backend": "Flask",
+				"database": "SQLite forensic log",
+				"models": {
+					"random_forest": bool(rf_model is not None),
+					"cnn_lstm": bool(cnn_lstm_model is not None),
+				},
+			},
+		}
+	)
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+@require_authentication
+def api_settings():
+	"""Get or update persisted dashboard settings."""
+
+	if request.method == "GET":
+		return jsonify(
+			{
+				"status": "success",
+				"settings": {
+					"engine": get_active_engine(),
+					"theme": get_setting("theme", DEFAULT_THEME),
+					"alert_threshold": get_alert_threshold(),
+				},
+			}
+		)
+
+	payload = request.get_json(silent=True) or {}
+	try:
+		updated_settings = update_runtime_settings(payload)
+		return jsonify({"status": "success", "settings": updated_settings})
+	except ValueError as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 400
+	except Exception as exc:
+		return jsonify({"status": "error", "message": f"Unable to update settings: {exc}"}), 500
+
+
+@app.route("/api/config", methods=["GET", "POST"])
+@require_authentication
+def api_config():
+	"""Get or update the active inference engine configuration."""
+
+	if request.method == "GET":
+		return jsonify({"status": "success", "active_engine": get_active_engine()})
+
+	try:
+		engine = get_request_engine()
+		persist = request.args.get("persist", "true").strip().lower() not in {"0", "false", "no"}
+		if persist:
+			engine = set_active_engine(engine)
+		else:
+			global active_engine
+			active_engine = engine
+		return jsonify({"status": "success", "active_engine": engine, "persisted": persist})
+	except ValueError as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 400
+	except Exception as exc:
+		return jsonify({"status": "error", "message": f"Unable to update configuration: {exc}"}), 500
+
+
 @app.route("/api/predict", methods=["POST"])
+@require_authentication
 def api_predict():
 	"""Placeholder direct prediction endpoint kept for compatibility."""
 
-	_ = request.get_json(silent=True) or {}
-	return jsonify({"status": "success", "prediction": "Normal", "confidence": 0.99})
+	json_payload = request.get_json(silent=True) or {}
+	engine = normalize_engine(json_payload.get("engine"), fallback=get_active_engine())
+	if not models_loaded:
+		return jsonify({"status": "error", "message": "Models are not loaded."}), 503
+
+	features = json_payload.get("features")
+	if features is None:
+		return jsonify({"status": "error", "message": "Missing 'features' payload."}), 400
+
+	try:
+		feature_array = np.asarray(features, dtype=float)
+		if feature_array.ndim != 1:
+			raise ValueError("The 'features' payload must be a one-dimensional numeric array.")
+		predicted_index, model_used, confidence, rf_confidence = predict_row(feature_array, engine)
+		classification = decode_class_index(predicted_index)
+		return jsonify(
+			{
+				"status": "success",
+				"engine": engine,
+				"prediction": classification,
+				"confidence": confidence,
+				"model_used": model_used,
+				"rf_confidence": rf_confidence,
+			}
+		)
+	except ValueError as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 400
+	except Exception as exc:
+		return jsonify({"status": "error", "message": f"Prediction failed: {exc}"}), 500
 
 
 @app.route("/api/upload_scan", methods=["POST"])
+@require_authentication
 def api_upload_scan():
 	"""Scan an uploaded CSV file using hybrid RF/CNN-LSTM inference."""
 
 	if not models_loaded:
 		return jsonify({"status": "error", "message": "Models are not loaded."}), 503
+
+	try:
+		engine = get_request_engine()
+	except ValueError as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 400
 
 	if "file" not in request.files:
 		return jsonify({"status": "error", "message": "No file part in request."}), 400
@@ -373,67 +899,23 @@ def api_upload_scan():
 	uploaded_file = request.files["file"]
 	if uploaded_file.filename == "":
 		return jsonify({"status": "error", "message": "No file selected."}), 400
+	if not uploaded_file.filename.lower().endswith(".csv"):
+		return jsonify({"status": "error", "message": "Only CSV uploads are supported."}), 400
 
 	try:
 		df = pd.read_csv(uploaded_file)
 		if df.empty:
 			return jsonify({"status": "error", "message": "Uploaded CSV is empty."}), 400
+		if len(df) > MAX_UPLOAD_ROWS:
+			return jsonify({"status": "error", "message": f"Upload exceeds the supported row limit of {MAX_UPLOAD_ROWS}."}), 400
 
-		# Reject exported logs or unrelated CSVs that do not resemble raw NSL-KDD
-		# traffic feature inputs.
-		required_markers = {"duration", "src_bytes"}
-		if not required_markers.intersection(set(df.columns)):
-			return (
-				jsonify(
-					{
-						"status": "error",
-						"message": "Invalid format. Expected raw network traffic data (41 features), not system logs.",
-					}
-				),
-				400,
-			)
-
-		# Accept either feature-only CSVs or raw NSL-KDD rows that include labels.
-		if "difficulty" in df.columns:
-			df = df.drop(columns=["difficulty"])
-		if "label" in df.columns:
-			df = df.drop(columns=["label"])
-
-		# Align categorical columns with the training representation.
-		if any(column in df.columns for column in ["protocol_type", "service", "flag"]):
-			df = pd.get_dummies(
-				df,
-				columns=[col for col in ["protocol_type", "service", "flag"] if col in df.columns],
-				drop_first=False,
-			)
-
-		# Match feature shape expected by the trained scaler/model.
-		expected_columns = feature_columns or list(getattr(scaler, "feature_names_in_", []))
-		if expected_columns:
-			df = df.reindex(columns=expected_columns, fill_value=0)
-
-		scaled_data = scaler.transform(df)
+		scaled_data = scale_uploaded_frame(df)
 
 		breakdown = {label: 0 for label in CLASS_NAMES}
+		batch_predictions = predict_batch(scaled_data, engine)
 
-		# Run hybrid decision logic row by row: RF first, CNN-LSTM fallback.
-		for idx, row in enumerate(scaled_data):
-			row_2d = row.reshape(1, -1)
-			rf_probabilities = rf_model.predict_proba(row_2d)[0]
-			rf_confidence = float(np.max(rf_probabilities))
-
-			if rf_confidence >= 0.85:
-				predicted_index = int(np.argmax(rf_probabilities))
-				model_used = "RF"
-				confidence_score = rf_confidence
-			else:
-				cnn_input = row.reshape(1, 1, row.shape[0])
-				cnn_probabilities = cnn_lstm_model.predict(cnn_input, verbose=0)[0]
-				predicted_index = int(np.argmax(cnn_probabilities))
-				model_used = "CNN-LSTM"
-				confidence_score = float(np.max(cnn_probabilities))
-
-			predicted_label = decode_class_index(predicted_index)
+		for prediction in batch_predictions:
+			predicted_label = decode_class_index(prediction["predicted_index"])
 			breakdown[predicted_label] += 1
 
 			# Log the prediction to the forensics database
@@ -442,14 +924,15 @@ def api_upload_scan():
 				source_ip=generate_fake_ip(),
 				protocol="tcp",  # Generic protocol for uploaded scans
 				classification=predicted_label,
-				confidence=confidence_score,
-				model_used=model_used,
+				confidence=float(prediction["confidence"]),
+				model_used=str(prediction["model_used"]),
 			)
 
 		return jsonify(
 			{
 				"status": "success",
 				"total": int(len(df)),
+				"engine": engine,
 				"breakdown": breakdown,
 			}
 		)
@@ -466,6 +949,7 @@ def api_upload_scan():
 
 
 @app.route("/api/history", methods=["GET"])
+@require_authentication
 def api_history():
 	"""Retrieve forensic alert history from the database.
 
@@ -474,27 +958,40 @@ def api_history():
 	"""
 
 	try:
-		conn = sqlite3.connect(DB_PATH)
-		conn.row_factory = sqlite3.Row  # Return rows as dictionaries
-		cursor = conn.cursor()
+		engine = get_request_engine()
+		limit_value = request.args.get("limit", "50").strip()
+		if not limit_value.isdigit():
+			raise ValueError("The 'limit' parameter must be a positive integer.")
+		limit = max(1, min(int(limit_value), 1000))
 
-		cursor.execute(
-			"""
-			SELECT * FROM alerts
-			ORDER BY timestamp DESC
-			LIMIT 50
-			"""
-		)
-
-		rows = cursor.fetchall()
-		alerts = [dict(row) for row in rows]
+		with get_db_connection() as conn:
+			cursor = conn.execute(
+				"""
+				SELECT * FROM alerts
+				ORDER BY timestamp DESC
+				LIMIT ?
+				""",
+				(limit,),
+			)
+			alerts = [dict(row) for row in cursor.fetchall()]
 
 		return jsonify(
 			{
 				"status": "success",
 				"count": len(alerts),
+				"engine": engine,
 				"alerts": alerts,
 			}
+		)
+	except ValueError as exc:
+		return (
+			jsonify(
+				{
+					"status": "error",
+					"message": str(exc),
+				}
+			),
+			400,
 		)
 	except Exception as exc:
 		return (
@@ -506,11 +1003,10 @@ def api_history():
 			),
 			500,
 		)
-	finally:
-		conn.close()
 
 
 @app.route("/api/live_feed", methods=["GET"])
+@require_authentication
 def api_live_feed():
 	"""Simulate a live traffic classification event using hybrid inference.
 
@@ -531,28 +1027,16 @@ def api_live_feed():
 			503,
 		)
 
+	try:
+		engine = get_request_engine()
+	except ValueError as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 400
+
 	# Pick a single traffic record from the live simulation pool.
 	sample_index = int(np.random.randint(0, sample_scaled_features.shape[0]))
 	sample_row = sample_scaled_features[sample_index]
 	raw_protocol = str(sample_protocol_types[sample_index])
-
-	# RF expects a 2D array: one sample with the model's feature vector.
-	rf_probabilities = rf_model.predict_proba(sample_row.reshape(1, -1))[0]
-	rf_class_index = int(np.argmax(rf_probabilities))
-	rf_confidence = float(np.max(rf_probabilities))
-
-	# Start with the RF result. If the RF confidence is low, fall back to the
-	# CNN-LSTM model, which receives a 3D tensor of shape (1, 1, features).
-	model_used = "RF"
-	predicted_class_index = rf_class_index
-	confidence = rf_confidence
-
-	if rf_confidence < 0.85:
-		cnn_input = sample_row.reshape(1, 1, sample_row.shape[0])
-		cnn_probabilities = cnn_lstm_model.predict(cnn_input, verbose=0)[0]
-		predicted_class_index = int(np.argmax(cnn_probabilities))
-		confidence = float(np.max(cnn_probabilities))
-		model_used = "CNN-LSTM"
+	predicted_class_index, model_used, confidence, _rf_confidence = predict_row(sample_row, engine)
 
 	# Convert the encoded prediction back to the project class label.
 	classification = decode_class_index(predicted_class_index)
@@ -577,9 +1061,10 @@ def api_live_feed():
 			"classification": classification,
 			"confidence": confidence,
 			"model_used": model_used,
+			"engine": engine,
 		}
 	)
 
 
 if __name__ == "__main__":
-	app.run(host="0.0.0.0", port=5000, debug=True)
+	app.run(host="0.0.0.0", port=5000, debug=False)

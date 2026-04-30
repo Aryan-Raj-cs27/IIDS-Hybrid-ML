@@ -13,11 +13,13 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.layers import Conv1D, Dense, Dropout, LSTM, MaxPooling1D
+from sklearn.utils.class_weight import compute_class_weight
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.layers import BatchNormalization, Conv1D, Dense, Dropout, LSTM, MaxPooling1D
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.models import Sequential
 
 
@@ -160,15 +162,34 @@ def preprocess_data(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, Standar
 	return scaled_features, encoded_target, scaler, target_encoder
 
 
+def encode_feature_frame(features: pd.DataFrame, reference_columns: list[str] | None = None) -> pd.DataFrame:
+	"""One-hot encode NSL-KDD categorical fields and align the result to a schema."""
+
+	encoded = pd.get_dummies(features, columns=["protocol_type", "service", "flag"], drop_first=False)
+	if reference_columns is not None:
+		encoded = encoded.reindex(columns=reference_columns, fill_value=0)
+	return encoded
+
+
 def train_rf(x_train: np.ndarray, x_test: np.ndarray, y_train: np.ndarray, y_test: np.ndarray) -> RandomForestClassifier:
 	"""Train and evaluate the Random Forest baseline model."""
 
-	rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+	rf_model = RandomForestClassifier(
+		n_estimators=500,
+		random_state=42,
+		n_jobs=-1,
+		class_weight="balanced_subsample",
+		max_features="sqrt",
+		min_samples_leaf=1,
+	)
 	rf_model.fit(x_train, y_train)
 
 	predictions = rf_model.predict(x_test)
 	accuracy = accuracy_score(y_test, predictions)
+	balanced_accuracy = balanced_accuracy_score(y_test, predictions)
 	print(f"Random Forest Accuracy: {accuracy:.4f}")
+	print(f"Random Forest Balanced Accuracy: {balanced_accuracy:.4f}")
+	print(classification_report(y_test, predictions, digits=4))
 
 	joblib.dump(rf_model, RF_MODEL_PATH)
 	return rf_model
@@ -180,7 +201,7 @@ def reshape_for_dl(features: np.ndarray) -> np.ndarray:
 	if features.ndim != 2:
 		raise ValueError(f"Expected a 2D array for reshaping, received shape {features.shape}.")
 
-	return features.reshape(features.shape[0], 1, features.shape[1])
+	return features.reshape(features.shape[0], features.shape[1], 1)
 
 
 def build_cnn_lstm_model(input_shape: tuple[int, int]) -> Sequential:
@@ -188,14 +209,24 @@ def build_cnn_lstm_model(input_shape: tuple[int, int]) -> Sequential:
 
 	model = Sequential(
 		[
-			Conv1D(filters=64, kernel_size=1, activation="relu", input_shape=input_shape),
-			MaxPooling1D(pool_size=1),
-			LSTM(64),
+			Conv1D(filters=128, kernel_size=3, padding="same", activation="relu", input_shape=input_shape),
+			BatchNormalization(),
+			Dropout(0.2),
+			Conv1D(filters=64, kernel_size=3, padding="same", activation="relu"),
+			BatchNormalization(),
+			MaxPooling1D(pool_size=2),
+			LSTM(64, return_sequences=False),
+			Dropout(0.3),
+			Dense(64, activation="relu"),
 			Dropout(0.2),
 			Dense(5, activation="softmax"),
 		]
 	)
-	model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
+	model.compile(
+		optimizer=Adam(learning_rate=1e-3, clipnorm=1.0),
+		loss="sparse_categorical_crossentropy",
+		metrics=["accuracy"],
+	)
 	return model
 
 
@@ -210,32 +241,51 @@ def train_cnnlstm(
 	x_train_reshaped = reshape_for_dl(x_train)
 	x_test_reshaped = reshape_for_dl(x_test)
 
+	class_weights_array = compute_class_weight(
+		class_weight="balanced",
+		classes=np.unique(y_train),
+		y=y_train,
+	)
+	class_weights = {int(class_index): float(weight) for class_index, weight in zip(np.unique(y_train), class_weights_array)}
+
 	model = build_cnn_lstm_model((x_train_reshaped.shape[1], x_train_reshaped.shape[2]))
 
 	early_stop = EarlyStopping(
 		monitor="val_loss",
-		patience=5,
+		patience=15,
+		min_delta=0.0005,
 		restore_best_weights=True,
+		start_from_epoch=10,
+	)
+	reduce_lr = ReduceLROnPlateau(
+		monitor="val_loss",
+		factor=0.5,
+		patience=5,
+		min_lr=1e-6,
+		verbose=1,
 	)
 	checkpoint = ModelCheckpoint(
 		CNN_LSTM_MODEL_PATH,
 		save_best_only=True,
 		monitor="val_accuracy",
 		mode="max",
+		verbose=1,
 	)
 
 	model.fit(
 		x_train_reshaped,
 		y_train,
-		epochs=50,
-		batch_size=64,
+		epochs=200,
+		batch_size=128,
 		validation_data=(x_test_reshaped, y_test),
-		callbacks=[early_stop, checkpoint],
+		callbacks=[early_stop, reduce_lr, checkpoint],
+		class_weight=class_weights,
 		verbose=1,
 	)
 
 	evaluation_loss, evaluation_accuracy = model.evaluate(x_test_reshaped, y_test, verbose=0)
 	print(f"CNN-LSTM Accuracy: {evaluation_accuracy:.4f}")
+	print(f"CNN-LSTM Loss: {evaluation_loss:.4f}")
 
 	model.save(CNN_LSTM_MODEL_PATH)
 	return model
@@ -245,18 +295,53 @@ def run_pipeline() -> None:
 	"""Run the full ML training pipeline end to end."""
 
 	raw_data = load_data()
-	features, target, _, _ = preprocess_data(raw_data)
+	processed = raw_data.copy()
+	processed["label"] = processed["label"].astype(str).str.strip().str.lower().map(ATTACK_MAP)
 
-	x_train, x_test, y_train, y_test = train_test_split(
+	if processed["label"].isna().any():
+		unknown_labels = sorted(raw_data.loc[processed["label"].isna(), "label"].astype(str).unique())
+		raise ValueError(f"Unmapped NSL-KDD attack labels found: {unknown_labels}")
+
+	features = processed.drop(columns=["label", "difficulty"])
+	target = processed["label"]
+
+	train_features, test_features, y_train, y_test = train_test_split(
 		features,
 		target,
 		test_size=0.2,
 		random_state=42,
 		stratify=target,
 	)
+	train_features, validation_features, y_train, y_validation = train_test_split(
+		train_features,
+		y_train,
+		test_size=0.125,
+		random_state=42,
+		stratify=y_train,
+	)
 
-	train_rf(x_train, x_test, y_train, y_test)
-	train_cnnlstm(x_train, x_test, y_train, y_test)
+	train_encoded = encode_feature_frame(train_features)
+	validation_encoded = encode_feature_frame(validation_features, reference_columns=list(train_encoded.columns))
+	test_encoded = encode_feature_frame(test_features, reference_columns=list(train_encoded.columns))
+
+	scaler = StandardScaler()
+	x_train = scaler.fit_transform(train_encoded)
+	x_validation = scaler.transform(validation_encoded)
+	x_test = scaler.transform(test_encoded)
+	joblib.dump(scaler, SCALER_PATH)
+
+	target_encoder = LabelEncoder()
+	y_train_encoded = target_encoder.fit_transform(y_train)
+	y_validation_encoded = target_encoder.transform(y_validation)
+	y_test_encoded = target_encoder.transform(y_test)
+
+	print("Training Random Forest baseline...")
+	train_rf(x_train, x_test, y_train_encoded, y_test_encoded)
+
+	print("Training CNN-LSTM hybrid model...")
+	train_cnnlstm(x_train, x_validation, y_train_encoded, y_validation_encoded)
+
+	print("Pipeline completed successfully.")
 
 
 if __name__ == "__main__":
