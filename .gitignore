@@ -1,34 +1,162 @@
+# ============================================================================
+# INTELLIGENT INTRUSION DETECTION SYSTEM (IIDS) - .gitignore
+# ============================================================================
+# This .gitignore file excludes sensitive, temporary, and non-essential files
+# from version control to maintain security and repository cleanliness.
+
 # 1. SECURITY (NEVER UPLOAD THESE)
+# ============================================================================
 .env
 *.env
+.env.local
+.env.*.local
 secret_keys.txt
+secrets.json
+credentials.json
 *.pem
+*.key
+*.pfx
+aws-credentials
+.aws/
 
-# 2. PYTHON & AI LOGIC
+# 2. PYTHON & VIRTUAL ENVIRONMENTS
+# ============================================================================
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 .venv/
 venv/
 env/
+ENV/
+.venv-*
 
-# 3. MACHINE LEARNING (Huge files)
+# 3. DATABASES & FORENSIC LOGS
+# ============================================================================
+*.sqlite3
+*.sqlite
+*.db
+iids_forensics.db
+*.db-journal
+logs/
+*.log
+
+# 4. MACHINE LEARNING ARTIFACTS (Large files, rebuild from source)
+# ============================================================================
+# Model checkpoint and weights files
 *.h5
+*.keras
 *.pkl
+*.pickle
 *.pt
+*.pth
+*.joblib
+
+# Training artifacts
 .ipynb_checkpoints/
+checkpoint/
+checkpoints/
+
+# 5. DATA FILES (Excluded - use data pipeline instead)
+# ============================================================================
 data/*.csv
 data/*.txt
+data/*.parquet
+data/*.feather
+data/raw/
+data/processed/
+data/embeddings/
 
-# 4. FRONTEND (Mayank's workspace)
+# 6. FRONTEND BUILD ARTIFACTS
+# ============================================================================
 node_modules/
-build/
+package-lock.json
+npm-debug.log*
+yarn-error.log*
 dist/
+build/
+.next/
+out/
 
-# 5. OS & IDE MESS (Hidden files)
+# 7. JUPYTER NOTEBOOKS (Cache & Kernels)
+# ============================================================================
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+*.ipynb_checkpoints
+
+# 8. IDE & EDITOR CONFIGURATION (User-specific)
+# ============================================================================
 .vscode/
+.vscode-server/
+.idea/
+.idea_modules/
+*.sublime-workspace
+*.sublime-project
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+.~*
 
-# 6. AI WORKSPACE LOGS
+# 9. TESTING & COVERAGE
+# ============================================================================
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# 10. TEMPORARY & BUILD FILES
+# ============================================================================
+*.tmp
+*.temp
+*.bak
+*.backup
+verify_db.py
+test_*.py
+tmp/
+temp/
+
+# 11. OS-SPECIFIC FILES
+# ============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# 12. AI WORKSPACE & CONTEXT FILES
+# ============================================================================
 .github/context/
 .cursor/
+.copilot/
+.agent/
+
+# 13. DOCKER & CONTAINER FILES (if containerized)
+# ============================================================================
+.dockerignore
+docker-compose.override.yml
+.docker/
+
