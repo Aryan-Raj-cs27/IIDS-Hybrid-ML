@@ -10,7 +10,11 @@ seaborn==0.13.2
 scikit-learn==1.4.0
 
 # Deep Learning (Stage 2: CNN-LSTM)
-tensorflow==2.15.0
+# Use a TensorFlow release compatible with current Python versions; 2.20+ is available.
+# If your environment does not support the wheel for your Python, install TensorFlow separately
+# (e.g., via conda or a matching Python version). This relaxed range enables pip to find
+# a compatible build automatically.
+tensorflow>=2.20.0,<2.22.0
 
 # Backend API
 Flask==3.0.1

@@ -4,7 +4,7 @@
 # This .gitignore file excludes sensitive, temporary, and non-essential files
 # from version control to maintain security and repository cleanliness.
 
-# 1. SECURITY (NEVER UPLOAD THESE)
+## 1. SECURITY (NEVER UPLOAD THESE)
 # ============================================================================
 .env
 *.env
@@ -13,6 +13,7 @@
 secret_keys.txt
 secrets.json
 credentials.json
+.iids_secret_key
 *.pem
 *.key
 *.pfx
@@ -154,6 +155,7 @@ Desktop.ini
 .cursor/
 .copilot/
 .agent/
+post_instruction.md
 
 # 13. DOCKER & CONTAINER FILES (if containerized)
 # ============================================================================

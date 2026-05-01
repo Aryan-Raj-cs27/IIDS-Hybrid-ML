@@ -398,6 +398,22 @@ IIDS/
 ### Reporting Issues
 - Use GitHub Issues for bug reports
 - Include: OS, Python version, error logs, reproduction steps
+
+---
+
+## ✅ Recent Enhancements (Deployment Readiness)
+
+- Added dataset download helper endpoint: `POST /api/download_dataset` (authenticated) — accepts `{ "url": "<dataset_url>" }` and saves the file into the `data/` folder for local training and inference.
+- Added blocked IP operational controls:
+  - Persisted `blocked_ips` table in the forensics DB
+  - API: `GET /api/blocked`, `POST /api/blocked` (body `{ip,reason}`), `DELETE /api/blocked/<ip>`
+  - Frontend settings panel: block/unblock IPs and view block list
+  - Live feed short-circuits and returns a `Blocked` classification when source IP matches a blocked entry (simulated enforcement for demos)
+- Improved dashboard interactions:
+  - Click on the alert type in the doughnut chart to filter the history table to that class
+  - Added a Block action for each history row to quickly add an IP to the blocked list
+
+These changes improve operational readiness and give a simple control surface for responding to detected threats. For production enforcement (firewall integration) connect the blocked list to your edge device or orchestration hooks.
 - For security issues: Email maintainers privately
 
 ---

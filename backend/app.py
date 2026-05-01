@@ -35,8 +35,26 @@ MODEL_DIR = os.path.abspath(os.path.join(PROJECT_ROOT, "model"))
 FRONTEND_DIR = os.path.abspath(os.path.join(PROJECT_ROOT, "frontend"))
 DATA_PATH = os.path.abspath(os.path.join(PROJECT_ROOT, "data", "KDDTrain+_20Percent.txt"))
 DB_PATH = os.path.abspath(os.path.join(PROJECT_ROOT, "iids_forensics.db"))
+SECRET_KEY_FILE = os.path.abspath(os.path.join(BACKEND_DIR, ".iids_secret_key"))
+USERS_TABLE = "users"
+SETTINGS_TABLE = "settings"
+LEGACY_SETTINGS_TABLE = "app_settings"
+ALERTS_TABLE = "alerts"
+BLOCKED_IPS_TABLE = "blocked_ips"
 DEFAULT_ENGINE_MODE = "hybrid"
 ENGINE_MODES = {"hybrid", "rf_only", "cnn_only"}
+ENGINE_ALIASES = {
+	"hybrid": "hybrid",
+	"h": "hybrid",
+	"rf": "rf_only",
+	"rf_only": "rf_only",
+	"random_forest": "rf_only",
+	"random forest": "rf_only",
+	"cnn": "cnn_only",
+	"cnn_only": "cnn_only",
+	"cnn-lstm": "cnn_only",
+	"cnn_lstm": "cnn_only",
+}
 DEFAULT_THEME = "dark"
 DEFAULT_ALERT_THRESHOLD = 0.85
 DEFAULT_ADMIN_USERNAME = os.environ.get("IIDS_ADMIN_USERNAME", "admin")
@@ -52,13 +70,40 @@ if PROJECT_ROOT not in sys.path:
 	sys.path.insert(0, PROJECT_ROOT)
 
 
+def get_persistent_secret_key() -> str:
+	"""Load a stable Flask secret key from the environment or disk."""
+
+	env_key = os.environ.get("IIDS_SECRET_KEY")
+	if env_key:
+		return env_key
+
+	try:
+		if os.path.exists(SECRET_KEY_FILE):
+			with open(SECRET_KEY_FILE, "r", encoding="utf-8") as secret_file:
+				stored_key = secret_file.read().strip()
+				if stored_key:
+					return stored_key
+
+		secret_key = secrets.token_urlsafe(64)
+		os.makedirs(os.path.dirname(SECRET_KEY_FILE), exist_ok=True)
+		with open(SECRET_KEY_FILE, "w", encoding="utf-8") as secret_file:
+			secret_file.write(secret_key)
+		try:
+			os.chmod(SECRET_KEY_FILE, 0o600)
+		except (AttributeError, OSError, PermissionError):
+			pass
+		return secret_key
+	except OSError:
+		return secrets.token_urlsafe(64)
+
+
 # -----------------------------------------------------------------------------
 # Flask application
 # -----------------------------------------------------------------------------
 # The frontend folder serves double duty here: it is used for templates and for
 # static assets so index.html can be rendered directly from the project UI.
 app = Flask(__name__, template_folder=FRONTEND_DIR, static_folder=FRONTEND_DIR)
-app.config["SECRET_KEY"] = os.environ.get("IIDS_SECRET_KEY") or secrets.token_urlsafe(32)
+app.config["SECRET_KEY"] = get_persistent_secret_key()
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
@@ -293,12 +338,39 @@ def require_authentication(view_func):
 	return wrapper
 
 
+def get_user_record(username: str) -> sqlite3.Row | None:
+	"""Fetch a persisted user record, if present."""
+
+	with get_db_connection() as connection:
+		ensure_core_tables(connection)
+		cursor = connection.execute(
+			f"SELECT username, password_hash, role, is_active FROM {USERS_TABLE} WHERE username = ?",
+			(username,),
+		)
+		return cursor.fetchone()
+
+
 def verify_admin_credentials(username: str, password: str) -> bool:
 	"""Verify a login against the persisted admin credentials."""
 
-	stored_username = get_setting("admin_username", DEFAULT_ADMIN_USERNAME)
-	stored_password_hash = get_setting("admin_password_hash", DEFAULT_ADMIN_PASSWORD_HASH)
-	return username == stored_username and check_password_hash(stored_password_hash, password)
+	user_row = get_user_record(username)
+	if user_row is None:
+		stored_username = get_setting("admin_username", DEFAULT_ADMIN_USERNAME)
+		stored_password_hash = get_setting("admin_password_hash", DEFAULT_ADMIN_PASSWORD_HASH)
+		if username != stored_username:
+			return False
+	else:
+		if not int(user_row["is_active"]):
+			return False
+		stored_password_hash = str(user_row["password_hash"])
+
+	try:
+		return check_password_hash(stored_password_hash, password)
+	except (ValueError, TypeError):
+		# Handle legacy/corrupt values gracefully and avoid 500s on login.
+		if isinstance(stored_password_hash, str) and stored_password_hash == password:
+			return True
+		return False
 
 
 def update_runtime_settings(payload: dict[str, Any]) -> dict[str, Any]:
@@ -309,6 +381,7 @@ def update_runtime_settings(payload: dict[str, Any]) -> dict[str, Any]:
 	if "engine" in payload:
 		updates["engine"] = normalize_engine(str(payload["engine"]))
 		set_active_engine(updates["engine"])
+		set_setting("engine", updates["engine"])
 
 	if "theme" in payload:
 		theme = str(payload["theme"]).strip().lower()
@@ -333,7 +406,8 @@ def update_runtime_settings(payload: dict[str, Any]) -> dict[str, Any]:
 def normalize_engine(engine: str | None, fallback: str = DEFAULT_ENGINE_MODE) -> str:
 	"""Validate and normalize a routing engine selection."""
 
-	engine_value = (engine or fallback).strip().lower()
+	engine_value = (engine or fallback).strip().lower().replace(" ", "_")
+	engine_value = ENGINE_ALIASES.get(engine_value, engine_value)
 	if engine_value not in ENGINE_MODES:
 		raise ValueError(f"Unsupported engine '{engine}'. Expected one of: {sorted(ENGINE_MODES)}")
 	return engine_value
@@ -353,12 +427,45 @@ def get_db_connection() -> sqlite3.Connection:
 	connection = sqlite3.connect(DB_PATH, timeout=10)
 	connection.row_factory = sqlite3.Row
 	connection.execute("PRAGMA foreign_keys = ON")
+	connection.execute("PRAGMA busy_timeout = 5000")
+	try:
+		connection.execute("PRAGMA journal_mode = WAL")
+		connection.execute("PRAGMA synchronous = NORMAL")
+	except sqlite3.Error:
+		pass
 	return connection
 
 
 def ensure_settings_table(connection: sqlite3.Connection) -> None:
 	"""Create the settings table used to persist runtime configuration."""
 
+	ensure_core_tables(connection)
+
+
+def ensure_core_tables(connection: sqlite3.Connection) -> None:
+	"""Create every database table the app depends on."""
+
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS users (
+			username TEXT PRIMARY KEY,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'admin',
+			is_active INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS settings (
+			setting_key TEXT PRIMARY KEY,
+			setting_value TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)
+		"""
+	)
 	connection.execute(
 		"""
 		CREATE TABLE IF NOT EXISTS app_settings (
@@ -368,6 +475,71 @@ def ensure_settings_table(connection: sqlite3.Connection) -> None:
 		)
 		"""
 	)
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS alerts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp TEXT NOT NULL,
+			source_ip TEXT NOT NULL,
+			protocol TEXT NOT NULL,
+			classification TEXT NOT NULL,
+			confidence REAL NOT NULL,
+			model_used TEXT NOT NULL
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS blocked_ips (
+			ip TEXT PRIMARY KEY,
+			reason TEXT,
+			created_at TEXT NOT NULL
+		)
+		"""
+	)
+
+
+def _upsert_setting(connection: sqlite3.Connection, setting_key: str, value: str) -> None:
+	"""Persist a setting in both the new and legacy settings tables."""
+
+	updated_at = datetime.now(timezone.utc).isoformat()
+	for table_name in (SETTINGS_TABLE, LEGACY_SETTINGS_TABLE):
+		connection.execute(
+			f"""
+			INSERT INTO {table_name} (setting_key, setting_value, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(setting_key) DO UPDATE SET
+				setting_value = excluded.setting_value,
+				updated_at = excluded.updated_at
+			""",
+			(setting_key, value, updated_at),
+		)
+
+
+def seed_default_runtime_data(connection: sqlite3.Connection) -> None:
+	"""Seed the admin user and default dashboard settings."""
+
+	updated_at = datetime.now(timezone.utc).isoformat()
+	connection.execute(
+		"""
+		INSERT INTO users (username, password_hash, role, is_active, created_at, updated_at)
+		VALUES (?, ?, ?, 1, ?, ?)
+		ON CONFLICT(username) DO NOTHING
+		""",
+		(
+			DEFAULT_ADMIN_USERNAME,
+			DEFAULT_ADMIN_PASSWORD_HASH,
+			"admin",
+			updated_at,
+			updated_at,
+		),
+	)
+	_upsert_setting(connection, "admin_username", DEFAULT_ADMIN_USERNAME)
+	_upsert_setting(connection, "admin_password_hash", DEFAULT_ADMIN_PASSWORD_HASH)
+	_upsert_setting(connection, "active_engine", DEFAULT_ENGINE_MODE)
+	_upsert_setting(connection, "engine", DEFAULT_ENGINE_MODE)
+	_upsert_setting(connection, "theme", DEFAULT_THEME)
+	_upsert_setting(connection, "alert_threshold", f"{DEFAULT_ALERT_THRESHOLD:.4f}")
 
 
 def get_setting(setting_key: str, default: str = DEFAULT_ENGINE_MODE) -> str:
@@ -375,14 +547,22 @@ def get_setting(setting_key: str, default: str = DEFAULT_ENGINE_MODE) -> str:
 
 	try:
 		with get_db_connection() as connection:
-			ensure_settings_table(connection)
+			ensure_core_tables(connection)
 			cursor = connection.execute(
-				"SELECT setting_value FROM app_settings WHERE setting_key = ?",
+				f"SELECT setting_value FROM {SETTINGS_TABLE} WHERE setting_key = ?",
 				(setting_key,),
 			)
 			row = cursor.fetchone()
 			if row is None:
-				return default
+				legacy_cursor = connection.execute(
+					f"SELECT setting_value FROM {LEGACY_SETTINGS_TABLE} WHERE setting_key = ?",
+					(setting_key,),
+				)
+				legacy_row = legacy_cursor.fetchone()
+				if legacy_row is None:
+					return default
+				_upsert_setting(connection, setting_key, str(legacy_row["setting_value"]))
+				return str(legacy_row["setting_value"])
 			return str(row["setting_value"])
 	except sqlite3.Error:
 		return default
@@ -392,17 +572,8 @@ def set_setting(setting_key: str, value: str) -> None:
 	"""Persist a runtime setting to SQLite."""
 
 	with get_db_connection() as connection:
-		ensure_settings_table(connection)
-		connection.execute(
-			"""
-			INSERT INTO app_settings (setting_key, setting_value, updated_at)
-			VALUES (?, ?, ?)
-			ON CONFLICT(setting_key) DO UPDATE SET
-				setting_value = excluded.setting_value,
-				updated_at = excluded.updated_at
-			""",
-			(setting_key, value, datetime.now(timezone.utc).isoformat()),
-		)
+		ensure_core_tables(connection)
+		_upsert_setting(connection, setting_key, value)
 
 
 def set_active_engine(engine: str) -> str:
@@ -411,6 +582,7 @@ def set_active_engine(engine: str) -> str:
 	global active_engine
 	active_engine = normalize_engine(engine)
 	set_setting("active_engine", active_engine)
+	set_setting("engine", active_engine)
 	return active_engine
 
 
@@ -420,7 +592,9 @@ def get_active_engine() -> str:
 	global active_engine
 	if active_engine not in ENGINE_MODES:
 		active_engine = DEFAULT_ENGINE_MODE
-	persisted_engine = get_setting("active_engine", active_engine)
+	persisted_engine = get_setting("active_engine", "")
+	if not persisted_engine:
+		persisted_engine = get_setting("engine", active_engine)
 	active_engine = normalize_engine(persisted_engine, fallback=active_engine)
 	return active_engine
 
@@ -481,7 +655,7 @@ def reshape_for_cnn(row: np.ndarray) -> np.ndarray:
 		row = row.reshape(1, -1)
 	if row.ndim != 2:
 		raise ValueError(f"Expected a 1D or 2D array, received shape {row.shape}.")
-	return row.reshape(row.shape[0], row.shape[1], 1)
+	return row.reshape(row.shape[0], 1, row.shape[1])
 
 
 def predict_row(row: np.ndarray, engine: str) -> tuple[int, str, float, float | None]:
@@ -573,60 +747,9 @@ def init_db():
 
 	try:
 		with get_db_connection() as conn:
-			ensure_settings_table(conn)
-			conn.execute(
-				"""
-				CREATE TABLE IF NOT EXISTS alerts (
-					id INTEGER PRIMARY KEY AUTOINCREMENT,
-					timestamp TEXT NOT NULL,
-					source_ip TEXT NOT NULL,
-					protocol TEXT NOT NULL,
-					classification TEXT NOT NULL,
-					confidence REAL NOT NULL,
-					model_used TEXT NOT NULL
-				)
-				"""
-			)
-			conn.execute(
-				"""
-				INSERT INTO app_settings (setting_key, setting_value, updated_at)
-				VALUES (?, ?, ?)
-				ON CONFLICT(setting_key) DO NOTHING
-				""",
-				("active_engine", DEFAULT_ENGINE_MODE, datetime.now(timezone.utc).isoformat()),
-			)
-			conn.execute(
-				"""
-				INSERT INTO app_settings (setting_key, setting_value, updated_at)
-				VALUES (?, ?, ?)
-				ON CONFLICT(setting_key) DO NOTHING
-				""",
-				("theme", DEFAULT_THEME, datetime.now(timezone.utc).isoformat()),
-			)
-			conn.execute(
-				"""
-				INSERT INTO app_settings (setting_key, setting_value, updated_at)
-				VALUES (?, ?, ?)
-				ON CONFLICT(setting_key) DO NOTHING
-				""",
-				("alert_threshold", f"{DEFAULT_ALERT_THRESHOLD:.4f}", datetime.now(timezone.utc).isoformat()),
-			)
-			conn.execute(
-				"""
-				INSERT INTO app_settings (setting_key, setting_value, updated_at)
-				VALUES (?, ?, ?)
-				ON CONFLICT(setting_key) DO NOTHING
-				""",
-				("admin_username", DEFAULT_ADMIN_USERNAME, datetime.now(timezone.utc).isoformat()),
-			)
-			conn.execute(
-				"""
-				INSERT INTO app_settings (setting_key, setting_value, updated_at)
-				VALUES (?, ?, ?)
-				ON CONFLICT(setting_key) DO NOTHING
-				""",
-				("admin_password_hash", DEFAULT_ADMIN_PASSWORD_HASH, datetime.now(timezone.utc).isoformat()),
-			)
+			ensure_core_tables(conn)
+			seed_default_runtime_data(conn)
+			conn.commit()
 		print(f"Database initialized at {DB_PATH}")
 	except Exception as exc:
 		print(f"Error initializing database: {exc}")
@@ -637,6 +760,7 @@ def log_alert(timestamp: str, source_ip: str, protocol: str, classification: str
 
 	try:
 		with get_db_connection() as conn:
+			ensure_core_tables(conn)
 			conn.execute(
 				"""
 				INSERT INTO alerts (timestamp, source_ip, protocol, classification, confidence, model_used)
@@ -646,6 +770,47 @@ def log_alert(timestamp: str, source_ip: str, protocol: str, classification: str
 			)
 	except Exception as exc:
 		print(f"Error logging alert to database: {exc}")
+
+
+def get_blocked_ips() -> list[dict[str, str]]:
+	"""Return all blocked IPs from the DB."""
+	try:
+		with get_db_connection() as conn:
+			ensure_core_tables(conn)
+			cursor = conn.execute("SELECT ip, reason, created_at FROM blocked_ips ORDER BY created_at DESC")
+			return [dict(row) for row in cursor.fetchall()]
+	except Exception:
+		return []
+
+
+def add_blocked_ip(ip: str, reason: str | None = None) -> None:
+	"""Insert or update a blocked IP record."""
+	with get_db_connection() as conn:
+		ensure_core_tables(conn)
+		conn.execute(
+			"""
+			INSERT INTO blocked_ips (ip, reason, created_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(ip) DO UPDATE SET reason = excluded.reason, created_at = excluded.created_at
+			""",
+			(ip, reason or "manual", datetime.now(timezone.utc).isoformat()),
+		)
+
+
+def remove_blocked_ip(ip: str) -> None:
+	with get_db_connection() as conn:
+		ensure_core_tables(conn)
+		conn.execute("DELETE FROM blocked_ips WHERE ip = ?", (ip,))
+
+
+def is_ip_blocked(ip: str) -> bool:
+	try:
+		with get_db_connection() as conn:
+			ensure_core_tables(conn)
+			cursor = conn.execute("SELECT 1 FROM blocked_ips WHERE ip = ?", (ip,))
+			return cursor.fetchone() is not None
+	except Exception:
+		return False
 
 
 # -----------------------------------------------------------------------------
@@ -710,6 +875,64 @@ def api_status():
 			"message": "IIDS backend is running.",
 		}
 	)
+
+
+@app.route("/api/blocked", methods=["GET", "POST"])
+@require_authentication
+def api_blocked():
+	if request.method == "GET":
+		return jsonify({"status": "success", "blocked": get_blocked_ips()})
+
+	payload = request.get_json(silent=True) or {}
+	ip = str(payload.get("ip", "")).strip()
+	reason = str(payload.get("reason", "manual")).strip()
+	if not ip:
+		return jsonify({"status": "error", "message": "IP address is required."}), 400
+	try:
+		add_blocked_ip(ip, reason)
+		return jsonify({"status": "success", "blocked_ip": ip})
+	except Exception as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/blocked/<ip>", methods=["DELETE"])
+@require_authentication
+def api_unblock(ip: str):
+	try:
+		ip = str(ip).strip()
+		if not ip:
+			return jsonify({"status": "error", "message": "IP address is required."}), 400
+		remove_blocked_ip(ip)
+		return jsonify({"status": "success", "unblocked_ip": ip})
+	except Exception as exc:
+		return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+@app.route("/api/download_dataset", methods=["POST"])
+@require_authentication
+def api_download_dataset():
+	"""Download a dataset from a provided URL into the data/ folder.
+
+	Request payload: { "url": "https://..." }
+	"""
+	payload = request.get_json(silent=True) or {}
+	url = str(payload.get("url", "")).strip()
+	if not url:
+		return jsonify({"status": "error", "message": "Dataset URL is required."}), 400
+	try:
+		# Save to data directory using last path component
+		from urllib.request import urlopen
+
+		from urllib.parse import urlsplit
+
+		parsed = urlsplit(url)
+		filename = os.path.basename(parsed.path) or "dataset.csv"
+		dest_path = os.path.join(PROJECT_ROOT, "data", filename)
+		with urlopen(url) as resp, open(dest_path, "wb") as out:
+			out.write(resp.read())
+		return jsonify({"status": "success", "path": dest_path})
+	except Exception as exc:
+		return jsonify({"status": "error", "message": f"Download failed: {exc}"}), 500
 
 
 @app.route("/api/me", methods=["GET"])
@@ -951,24 +1174,17 @@ def api_upload_scan():
 @app.route("/api/history", methods=["GET"])
 @require_authentication
 def api_history():
-	"""Retrieve forensic alert history from the database.
-
-	Returns the last 50 alerts ordered by timestamp (most recent first) as a JSON array.
-	This endpoint allows the frontend to display historical detections and perform forensic analysis.
-	"""
-
 	try:
-		engine = get_request_engine()
-		limit_value = request.args.get("limit", "50").strip()
-		if not limit_value.isdigit():
-			raise ValueError("The 'limit' parameter must be a positive integer.")
-		limit = max(1, min(int(limit_value), 1000))
+		engine = get_request_engine(default=get_active_engine())
+		limit = int(request.args.get("limit", "100"))
+		limit = max(1, min(limit, 1000))
 
 		with get_db_connection() as conn:
 			cursor = conn.execute(
 				"""
-				SELECT * FROM alerts
-				ORDER BY timestamp DESC
+				SELECT id, timestamp, source_ip, protocol, classification, confidence, model_used
+				FROM alerts
+				ORDER BY id DESC
 				LIMIT ?
 				""",
 				(limit,),
@@ -984,25 +1200,9 @@ def api_history():
 			}
 		)
 	except ValueError as exc:
-		return (
-			jsonify(
-				{
-					"status": "error",
-					"message": str(exc),
-				}
-			),
-			400,
-		)
+		return jsonify({"status": "error", "message": str(exc)}), 400
 	except Exception as exc:
-		return (
-			jsonify(
-				{
-					"status": "error",
-					"message": f"Error retrieving alert history: {exc}",
-				}
-			),
-			500,
-		)
+		return jsonify({"status": "error", "message": f"Error retrieving alert history: {exc}"}), 500
 
 
 @app.route("/api/live_feed", methods=["GET"])
@@ -1044,6 +1244,31 @@ def api_live_feed():
 	# Log this live feed event to the forensics database
 	timestamp = datetime.now(timezone.utc).isoformat()
 	source_ip = generate_fake_ip()
+
+	# If the generated source IP is blocked, short-circuit and mark as blocked
+	if is_ip_blocked(source_ip):
+		classification = "Blocked"
+		confidence = 1.0
+		model_used = "BLOCKED"
+		log_alert(
+			timestamp=timestamp,
+			source_ip=source_ip,
+			protocol=raw_protocol,
+			classification=classification,
+			confidence=confidence,
+			model_used=model_used,
+		)
+		return jsonify(
+			{
+				"timestamp": timestamp,
+				"sourceIP": source_ip,
+				"protocol": raw_protocol,
+				"classification": classification,
+				"confidence": confidence,
+				"model_used": model_used,
+				"engine": engine,
+			}
+		)
 	log_alert(
 		timestamp=timestamp,
 		source_ip=source_ip,
