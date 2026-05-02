@@ -20,15 +20,14 @@ import joblib
 import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, render_template, request, session
-from tensorflow.keras.models import load_model
+from flask_cors import CORS 
+from tensorflow.keras.models import load_model  # type: ignore
 from werkzeug.security import check_password_hash, generate_password_hash
 
+# Initialize Flask App and Enable CORS
+app = Flask(__name__)
+CORS(app, supports_credentials=True)
 
-# -----------------------------------------------------------------------------
-# Path setup
-# -----------------------------------------------------------------------------
-# Keep all project locations absolute so the backend works from any launch
-# directory inside VS Code, a terminal, or a production deployment.
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_DIR, os.pardir))
 MODEL_DIR = os.path.abspath(os.path.join(PROJECT_ROOT, "model"))

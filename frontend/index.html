@@ -1116,7 +1116,7 @@
       `;
     }
 
-    // 🚀 MASTER CHART ROUTING LOGIC
+    // MASTER CHART ROUTING LOGIC
     function filterAndRouteToHistory(label) {
       // 1. Pause Auto-Refresh if it is running so the IPs don't disappear
       if (state.toggles.autoRefresh) {
@@ -1480,7 +1480,7 @@
       dom.navButtons.forEach((button) => button.classList.toggle('active', button.dataset.view === viewId));
     }
 
-    // 🚀 NEW: Robust Toggle that actively stops the clock
+    // NEW: Robust Toggle that actively stops the clock
     function updateToggleState(button, key) {
       state.toggles[key] = !state.toggles[key];
       button.classList.toggle('on', state.toggles[key]);
@@ -1547,7 +1547,7 @@
       if (dom.liveSampleBtn) dom.liveSampleBtn.addEventListener('click', () => loadLiveFeed(true).catch((error) => toast(error.message, 'error')));
       if (dom.runLiveFeedBtn) dom.runLiveFeedBtn.addEventListener('click', () => loadLiveFeed(true).catch((error) => toast(error.message, 'error')));
       
-      // 🚀 NEW: Robust Refresh Dashboard Button
+      //  NEW: Robust Refresh Dashboard Button
       if (dom.refreshDashboardBtn) {
         dom.refreshDashboardBtn.addEventListener('click', async () => {
           dom.refreshDashboardBtn.disabled = true;
@@ -1564,7 +1564,7 @@
         });
       }
 
-      // 🚀 NEW: Smart Refresh History Button
+      //  NEW: Smart Refresh History Button
       if (dom.refreshHistoryBtn) {
         dom.refreshHistoryBtn.addEventListener('click', () => {
           loadHistory().catch((error) => toast(error.message, 'error'));
