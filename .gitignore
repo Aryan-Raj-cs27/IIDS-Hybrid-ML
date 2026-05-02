@@ -1,167 +1,52 @@
 # ============================================================================
-# INTELLIGENT INTRUSION DETECTION SYSTEM (IIDS) - .gitignore
+# IIDS - PRODUCTION READY .GITIGNORE
 # ============================================================================
-# This .gitignore file excludes sensitive, temporary, and non-essential files
-# from version control to maintain security and repository cleanliness.
 
-## 1. SECURITY (NEVER UPLOAD THESE)
-# ============================================================================
+## 1. AUTH & SECRETS (STRICTLY IGNORED)
 .env
 *.env
-.env.local
-.env.*.local
+.iids_secret_key
 secret_keys.txt
 secrets.json
 credentials.json
-.iids_secret_key
-*.pem
-*.key
-*.pfx
-aws-credentials
-.aws/
+.vscode/
 
-# 2. PYTHON & VIRTUAL ENVIRONMENTS
-# ============================================================================
+## 2. DATABASES & PERSISTENT STORAGE
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+iids_forensics.db
+
+## 3. PYTHON RUNTIME
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Virtual environments
 .venv/
 venv/
 env/
-ENV/
-.venv-*
+.Python
 
-# 3. DATABASES & FORENSIC LOGS
-# ============================================================================
-*.db-shm
-*.db-wal
-*.sqlite3
-*.sqlite
-*.db
-iids_forensics.db
-*.db-journal
+## 4. PERMITTED FOLDERS & EXCLUSIONS
+# Allow the ML models
+!model/
+
+# Ignore everything in the data folder...
+data/*
+# ...EXCEPT the one specific file the backend needs!
+!data/KDDTrain+_20Percent.txt
+
+## 5. LOGS & OS JUNK
 logs/
 *.log
-
-# 4. MACHINE LEARNING ARTIFACTS (Large files, rebuild from source)
-# ============================================================================
-# Model checkpoint and weights files
-*.h5
-*.keras
-*.pkl
-*.pickle
-*.pt
-*.pth
-*.joblib
-
-# Training artifacts
 .ipynb_checkpoints/
-checkpoint/
-checkpoints/
-
-# 5. DATA FILES (Excluded - use data pipeline instead)
-# ============================================================================
-data/
-data/*.csv
-data/*.txt
-data/*.parquet
-data/*.feather
-data/raw/
-data/processed/
-data/embeddings/
-
-# 6. FRONTEND BUILD ARTIFACTS
-# ============================================================================
-node_modules/
-package-lock.json
-npm-debug.log*
-yarn-error.log*
-dist/
-build/
-.next/
-out/
-
-# 7. JUPYTER NOTEBOOKS (Cache & Kernels)
-# ============================================================================
-.ipynb_checkpoints/
-*.nbconvert.ipynb
-*.ipynb_checkpoints
-
-# 8. IDE & EDITOR CONFIGURATION (User-specific)
-# ============================================================================
-.vscode/
-.vscode-server/
-.idea/
-.idea_modules/
-*.sublime-workspace
-*.sublime-project
 .DS_Store
 Thumbs.db
-*.swp
-*.swo
-*~
-.~*
 
-# 9. TESTING & COVERAGE
-# ============================================================================
-.pytest_cache/
-.coverage
-htmlcov/
-*.cover
-.hypothesis/
-
-# 10. TEMPORARY & BUILD FILES
-# ============================================================================
-*.tmp
-*.temp
-*.bak
-*.backup
-verify_db.py
-test_*.py
-tmp/
-temp/
-
-# 11. OS-SPECIFIC FILES
-# ============================================================================
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-Desktop.ini
-
-# 12. AI WORKSPACE & CONTEXT FILES
-# ============================================================================
+## 6. AI WORKSPACE & CONTEXT (STRICTLY HIDDEN)
 .github/context/
 .cursor/
 .copilot/
 .agent/
-post_instruction.md
-
-# 13. DOCKER & CONTAINER FILES (if containerized)
-# ============================================================================
-.dockerignore
-docker-compose.override.yml
-.docker/
-
+SESSION.md
+*.md~
