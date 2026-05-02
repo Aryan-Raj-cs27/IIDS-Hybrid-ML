@@ -19,3 +19,4 @@ tensorflow>=2.20.0,<2.22.0
 # Backend API
 Flask==3.0.1
 Flask-Cors==4.0.0
+gunicorn==21.2.0
