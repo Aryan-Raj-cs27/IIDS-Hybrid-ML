@@ -42,18 +42,21 @@ IIDS is a production-ready intrusion detection system that leverages hybrid mach
 ## ✨ Features
 
 ### Machine Learning
+
 - ✅ **Random Forest**: 99.66% accuracy on NSL-KDD test set
 - ✅ **CNN-LSTM**: 99.09% accuracy with temporal feature processing
 - ✅ **Hybrid Routing**: Intelligent model selection based on confidence thresholds (85%)
 - ✅ **NSL-KDD Support**: 41-feature network traffic dataset with preprocessing pipeline
 
 ### Backend (Flask)
+
 - ✅ **REST API**: Stateless, JSON-based endpoints for predictions and uploads
 - ✅ **Live Feed API**: Streaming interface for real-time traffic simulation
 - ✅ **Forensic History**: Query-able alert history with timestamp ordering
 - ✅ **Error Handling**: Robust try/except patterns with proper resource cleanup
 
 ### Frontend (Vanilla JS)
+
 - ✅ **Multi-View Dashboard**: Dashboard, Metrics, Traffic, Settings views
 - ✅ **Live Charts**: Chart.js visualization with hover tooltips
 - ✅ **Drag-and-Drop Upload**: Premium UI for batch file scanning
@@ -61,6 +64,7 @@ IIDS is a production-ready intrusion detection system that leverages hybrid mach
 - ✅ **Toast Notifications**: Real-time feedback on user actions
 
 ### Database
+
 - ✅ **SQLite Forensics**: Persistent alert logging with 7-column schema
 - ✅ **Structured Queries**: Efficient retrieval of recent detections
 - ✅ **Production-Ready**: ACID compliance with proper connection management
@@ -105,17 +109,20 @@ IIDS is a production-ready intrusion detection system that leverages hybrid mach
 ## 🚀 Quick Start
 
 ### Prerequisites
+
 - Python 3.13+
 - pip or conda
 - ~2GB free disk space
 
 ### 1. Clone Repository
+
 ```bash
 git clone https://github.com/Aryan-Raj-cs27/IIDS.git
 cd IIDS
 ```
 
 ### 2. Create Virtual Environment
+
 ```bash
 python -m venv .venv
 
@@ -127,32 +134,33 @@ source .venv/bin/activate
 ```
 
 ### 3. Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 4. Train Models
+
 ```bash
 python model/train_pipeline.py
 ```
+
 This generates: `scaler.pkl`, `rf_model.pkl`, `cnn_lstm_model.h5`
 
 ### 5. Run Backend
+
 ```bash
 python backend/app.py
 ```
-Server runs on `http://localhost:5000`
 
-### 6. Access Frontend
-Open browser: `http://localhost:5000`
-- **Demo Username**: `admin`
-- **Demo Password**: `password`
+Server runs on `http://localhost:5000`
 
 ---
 
 ## 📦 Installation
 
 ### Full Setup with Virtual Environment
+
 ```bash
 # Clone repo
 git clone https://github.com/Aryan-Raj-cs27/IIDS.git
@@ -177,6 +185,7 @@ python backend/app.py
 ```
 
 ### Docker (Optional)
+
 ```bash
 docker build -t iids:latest .
 docker run -p 5000:5000 iids:latest
@@ -187,6 +196,7 @@ docker run -p 5000:5000 iids:latest
 ## 💻 Usage
 
 ### Via Web Dashboard
+
 1. Login with demo credentials
 2. **Dashboard**: View live traffic predictions and threat statistics
 3. **Metrics**: Check model performance (RF 99.66%, CNN-LSTM 99.09%)
@@ -196,15 +206,19 @@ docker run -p 5000:5000 iids:latest
 ### Via REST API
 
 #### Get System Status
+
 ```bash
 curl http://localhost:5000/api/status
 ```
 
 #### Get Live Prediction
+
 ```bash
 curl http://localhost:5000/api/live_feed
 ```
+
 Response:
+
 ```json
 {
   "timestamp": "2026-04-30T10:30:45.123456+00:00",
@@ -217,10 +231,13 @@ Response:
 ```
 
 #### Upload CSV for Scanning
+
 ```bash
 curl -X POST -F "file=@traffic.csv" http://localhost:5000/api/upload_scan
 ```
+
 Response:
+
 ```json
 {
   "status": "success",
@@ -236,6 +253,7 @@ Response:
 ```
 
 #### Get Alert History
+
 ```bash
 curl http://localhost:5000/api/history
 ```
@@ -246,18 +264,19 @@ curl http://localhost:5000/api/history
 
 ### Endpoints
 
-| Method | Route | Purpose |
-|--------|-------|---------|
-| GET | `/` | Render frontend dashboard |
-| GET | `/api/status` | System health check |
-| GET | `/api/live_feed` | Single prediction from live pool |
-| POST | `/api/upload_scan` | Batch CSV scanning |
-| GET | `/api/history` | Last 50 forensic alerts |
-| POST | `/api/predict` | Direct prediction (deprecated) |
+| Method | Route                | Purpose                          |
+| ------ | -------------------- | -------------------------------- |
+| GET    | `/`                | Render frontend dashboard        |
+| GET    | `/api/status`      | System health check              |
+| GET    | `/api/live_feed`   | Single prediction from live pool |
+| POST   | `/api/upload_scan` | Batch CSV scanning               |
+| GET    | `/api/history`     | Last 50 forensic alerts          |
+| POST   | `/api/predict`     | Direct prediction (deprecated)   |
 
 ### Request/Response Schemas
 
 **Live Feed Response**
+
 ```json
 {
   "timestamp": "ISO-8601 UTC",
@@ -270,6 +289,7 @@ curl http://localhost:5000/api/history
 ```
 
 **History Response**
+
 ```json
 {
   "status": "success|error",
@@ -314,6 +334,7 @@ curl http://localhost:5000/api/history
 - [ ] Keep dependencies updated (pip install --upgrade)
 
 ### Environment Variables (Recommended)
+
 ```bash
 FLASK_ENV=production
 FLASK_DEBUG=false
@@ -328,16 +349,19 @@ ADMIN_PASS=your-secure-password
 ## 📊 Performance
 
 ### Model Accuracy
+
 - **Random Forest**: 99.66% on NSL-KDD test set
 - **CNN-LSTM**: 99.09% on NSL-KDD test set
 - **Hybrid Average**: ~99.5% with optimized routing
 
 ### Inference Speed
+
 - **RF Prediction**: <1ms per sample
 - **CNN-LSTM Prediction**: ~5-10ms per sample
 - **Hybrid (avg)**: ~2ms per sample (with caching)
 
 ### Scalability
+
 - **Throughput**: ~500 predictions/second (single machine)
 - **Batch Processing**: 10,000 row CSV in ~2 seconds
 - **Live Feed**: 1000+ concurrent connections with proper load balancing
@@ -383,12 +407,14 @@ IIDS/
 ## 🤝 Contributing
 
 ### Code Standards
+
 - Follow PEP 8 style guidelines
 - Type hints for function signatures
 - Comprehensive docstrings for modules/functions
 - Unit tests for critical logic
 
 ### Pull Request Process
+
 1. Fork the repository
 2. Create feature branch: `git checkout -b feature/your-feature`
 3. Commit changes: `git commit -m "Add feature description"`
@@ -396,6 +422,7 @@ IIDS/
 5. Open Pull Request with detailed description
 
 ### Reporting Issues
+
 - Use GitHub Issues for bug reports
 - Include: OS, Python version, error logs, reproduction steps
 
@@ -414,6 +441,7 @@ IIDS/
   - Added a Block action for each history row to quickly add an IP to the blocked list
 
 These changes improve operational readiness and give a simple control surface for responding to detected threats. For production enforcement (firewall integration) connect the blocked list to your edge device or orchestration hooks.
+
 - For security issues: Email maintainers privately
 
 ---
@@ -423,7 +451,9 @@ These changes improve operational readiness and give a simple control surface fo
 This project is licensed under the **MIT License** - see [LICENSE](LICENSE) file for details.
 
 ### Citation
+
 If you use this project in research, please cite:
+
 ```bibtex
 @software{iids2026,
   title={Intelligent Intrusion Detection System (IIDS)},
