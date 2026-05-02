@@ -198,12 +198,12 @@
     .card-subtitle { margin: 6px 0 0; color: var(--muted); font-size: 0.84rem; line-height: 1.5; }
     .card-body { padding: 18px 20px 20px; }
     .chart-wrap { height: 340px; position: relative; }
-    .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+    .chart-wrap canvas { width: 100% !important; height: 100% !important; cursor: pointer; }
 
     .table-wrap { overflow: auto; border-radius: 18px; border: 1px solid var(--border); }
     table { width: 100%; border-collapse: collapse; min-width: 760px; background: var(--surface); }
     th, td { padding: 14px 16px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; font-size: 0.92rem; }
-    th { position: sticky; top: 0; background: var(--surface-strong); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; }
+    th { position: sticky; top: 0; background: var(--surface-strong); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.72rem; z-index: 2; }
     tr:hover td { background: rgba(148, 163, 184, 0.05); }
 
     .tag-success { background: rgba(34, 197, 94, 0.12); color: var(--success); border-color: rgba(34, 197, 94, 0.22); }
@@ -218,7 +218,7 @@
     .file-size { margin: 4px 0 0; color: var(--muted); font-size: 0.85rem; }
 
     .input, .select, .range { width: 100%; box-sizing: border-box; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); color: var(--text); padding: 12px 14px; outline: none; transition: 180ms ease; }
-    .input:focus, .select:focus, .range:focus { border-color: rgba(34, 197, 94, 0.4); box-shadow: 0 0 0 4px var(--focus); }
+    .input:focus, .select:focus, .range:focus { border-color: rgba(37, 99, 235, 0.4); box-shadow: 0 0 0 4px var(--focus); }
     .range { padding: 0; accent-color: var(--accent); }
     .field { display: grid; gap: 8px; }
     .field-label { font-size: 0.84rem; color: var(--muted); }
@@ -310,6 +310,39 @@
       <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
         <button class="secondary-btn" id="modal-cancel">Cancel</button>
         <button class="danger-btn" id="modal-confirm">Confirm Block</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="export-modal" class="modal-overlay hidden">
+    <div class="panel panel-pad modal-card">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+        <div class="icon-btn" style="color:var(--info); border-color:var(--info);"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg></div>
+        <h2 style="margin:0; font-family:'Space Grotesk',sans-serif;">Export Forensic Data</h2>
+      </div>
+      <p class="muted">Select parameters for your CSV report generation.</p>
+      
+      <div class="field" style="margin-top: 16px;">
+        <label class="field-label">Record Limit</label>
+        <select id="export-limit" class="select">
+          <option value="50">Last 50 Records</option>
+          <option value="200">Last 200 Records</option>
+          <option value="1000">Last 1,000 Records</option>
+          <option value="all">All Records</option>
+        </select>
+      </div>
+      
+      <div class="field" style="margin-top: 14px;">
+        <label class="field-label">Threat Filter</label>
+        <select id="export-filter" class="select">
+          <option value="all">All Traffic (Include Normal)</option>
+          <option value="threats">Threats Only (Exclude Normal)</option>
+        </select>
+      </div>
+      
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:24px;">
+        <button class="secondary-btn" id="export-cancel">Cancel</button>
+        <button class="primary-btn" id="export-confirm">Generate CSV</button>
       </div>
     </div>
   </div>
@@ -486,7 +519,7 @@
               <div class="card-head">
                 <div>
                   <h3 class="card-title">Threat Distribution</h3>
-                  <p class="card-subtitle">Current detection mix across classes.</p>
+                  <p class="card-subtitle">Click a slice to filter forensic history.</p>
                 </div>
                 <span class="tag tag-warning">Live</span>
               </div>
@@ -511,7 +544,12 @@
                   <h3 class="card-title" style="margin-top: 10px; font-size: 1.4rem;">Drag and drop network traffic here</h3>
                   <p class="card-subtitle">Upload an NSL-KDD-style CSV file for batch scanning. The selected engine and alert threshold are applied automatically.</p>
                   <div class="hero-actions" style="justify-content: center; margin-top: 16px;">
-                    <button class="primary-btn" id="browse-file" type="button">Browse CSV</button>
+                    <select class="select" id="upload-engine-select" style="width: auto; padding: 10px; font-weight: 500;">
+                      <option value="hybrid">Hybrid Engine</option>
+                      <option value="rf_only">RF Only</option>
+                      <option value="cnn_only">CNN Only</option>
+                    </select>
+                    <button class="primary-btn" id="browse-file" type="button">Browse</button>
                     <button class="secondary-btn" id="scan-file" type="button" disabled>Scan File</button>
                   </div>
                   <input id="traffic-file" type="file" accept=".csv" hidden>
@@ -525,9 +563,12 @@
                 <button class="ghost-btn" id="clear-file" type="button">Remove</button>
               </div>
               <div class="compact-item" style="margin-top: 16px;">
-                <span class="muted">Upload result</span>
-                <span class="mono" id="upload-status">Awaiting CSV input</span>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <span class="mono" id="upload-status">Awaiting CSV input</span>
+                  <button class="ghost-btn hidden" id="download-scan-btn" type="button" style="padding:4px 10px; font-size:0.8rem; border-color:var(--border);">Save Report</button>
+                </div>
               </div>
+              <p class="card-subtitle" style="text-align: center; margin-top: 10px;">Click a bar in the chart below to filter your history table to that exact threat.</p>
               <div class="chart-wrap" style="margin-top: 16px; height: 260px;"><canvas id="upload-chart"></canvas></div>
             </div>
 
@@ -732,8 +773,9 @@
       toggles: { autoRefresh: true, alertToasts: true, power: true },
       charts: { trend: null, mix: null, upload: null },
       files: { selected: null },
+      lastScanData: null,
       assistant: { open: false, messages: [] },
-      targetIPToBlock: null // holds the IP for the custom modal
+      targetIPToBlock: null
     };
 
     const dom = {
@@ -785,6 +827,8 @@
       fileName: document.getElementById('file-name'),
       fileSize: document.getElementById('file-size'),
       uploadStatus: document.getElementById('upload-status'),
+      uploadEngineSelect: document.getElementById('upload-engine-select'),
+      downloadScanBtn: document.getElementById('download-scan-btn'),
       uploadOutcome: document.getElementById('live-outcome'),
       liveTimestamp: document.getElementById('live-timestamp'),
       liveSource: document.getElementById('live-source'),
@@ -914,7 +958,6 @@
       refreshChartStyles();
     }
     
-    // Listen for OS level theme changes if set to system
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
       if (state.settings.theme === 'system') applyTheme('system');
     });
@@ -1034,7 +1077,6 @@
         const actionClass = isBlocked ? 'danger-btn' : 'secondary-btn';
         const actionType = isBlocked ? 'unblock' : 'block';
 
-        // Escaping data attributes
         const safeData = `data-ip="${entry.sourceIP}" data-proto="${entry.protocol}" data-class="${entry.classification}" data-conf="${Number.isNaN(confidence) ? '--' : formatConfidence(confidence)}" data-mod="${entry.model_used}"`;
 
         row.innerHTML = `
@@ -1045,7 +1087,7 @@
           <td>${Number.isNaN(confidence) ? '--' : formatConfidence(confidence)}</td>
           <td>${entry.model_used}</td>
           <td>
-            <button class="${actionClass}" ${safeData} data-action="${actionType}" style="min-width: 90px;">${actionText}</button>
+            <button class="${actionClass}" ${safeData} data-action="${actionType}" style="min-width: 90px; padding:4px 8px; font-size:0.75rem;">${actionText}</button>
           </td>
         `;
         dom.historyTable.appendChild(row);
@@ -1074,40 +1116,53 @@
       `;
     }
 
-    function updateCharts() {
-      if (!state.charts.trend || !state.charts.mix) return;
-      state.charts.trend.data.datasets[0].data = state.liveSeries;
-      state.charts.mix.data.datasets[0].data = Object.values(state.alertSeries);
-      state.charts.trend.update('none');
-      state.charts.mix.update('none');
+    // 🚀 MASTER CHART ROUTING LOGIC
+    function filterAndRouteToHistory(label) {
+      // 1. Pause Auto-Refresh if it is running so the IPs don't disappear
+      if (state.toggles.autoRefresh) {
+        dom.toggleAutoRefresh.click(); // Safely triggers updateToggleState
+      }
+      // 2. Switch the screen to the History Tab
+      setActiveView('history-view');
+      // 3. Filter the table
+      const filtered = state.history.filter((r) => (r.classification || '').toString() === label);
+      renderHistoryTable(filtered);
+      // 4. Alert the user
+      toast(`Filtered to ${label}. Auto-refresh paused for inspection.`);
     }
 
     function ensureCharts() {
       if (!state.charts.trend) {
         state.charts.trend = new Chart(dom.trendChart, {
           type: 'line',
-          data: {
-            labels: Array.from({ length: state.liveSeries.length }, (_, index) => index + 1),
-            datasets: [{ label: 'Samples', data: state.liveSeries, borderColor: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.35, pointRadius: 2, pointHoverRadius: 5 }]
-          },
+          data: { labels: Array.from({ length: state.liveSeries.length }, (_, index) => index + 1), datasets: [{ label: 'Samples', data: state.liveSeries, borderColor: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(), backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.35, pointRadius: 2, pointHoverRadius: 5 }] },
           options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: getTextColor() } } }, scales: { x: { ticks: { color: getMutedColor() }, grid: { color: getGridColor() } }, y: { ticks: { color: getMutedColor() }, grid: { color: getGridColor() } } } }
         });
       }
       if (!state.charts.mix) {
         state.charts.mix = new Chart(dom.mixChart, {
           type: 'doughnut',
-          data: {
-            labels: Object.keys(state.alertSeries),
-            datasets: [{ data: Object.values(state.alertSeries), backgroundColor: ['#16a34a', '#dc2626', '#ea580c', '#f97316', '#0ea5e9'], borderColor: getSurfaceColor(), borderWidth: 2, hoverOffset: 10 }]
-          },
-          options: { responsive: true, maintainAspectRatio: false, cutout: '66%', plugins: { legend: { labels: { color: getTextColor() } } }, onClick(evt, elements) { if (!elements || elements.length === 0) return; const idx = elements[0].index; const label = this.data.labels[idx]; const filtered = state.history.filter((r) => (r.classification || '').toString() === label); renderHistoryTable(filtered); toast(`Filtered history to ${label}`); } }
+          data: { labels: Object.keys(state.alertSeries), datasets: [{ data: Object.values(state.alertSeries), backgroundColor: ['#16a34a', '#dc2626', '#ea580c', '#f97316', '#0ea5e9'], borderColor: getSurfaceColor(), borderWidth: 2, hoverOffset: 10 }] },
+          options: { 
+            responsive: true, maintainAspectRatio: false, cutout: '66%', plugins: { legend: { labels: { color: getTextColor() } } }, 
+            onClick(evt, elements) { 
+              if (!elements || elements.length === 0) return; 
+              filterAndRouteToHistory(this.data.labels[elements[0].index]); 
+            } 
+          }
         });
       }
       if (!state.charts.upload) {
         state.charts.upload = new Chart(dom.uploadChart, {
           type: 'bar',
           data: { labels: ['Normal', 'DoS', 'Probe', 'R2L', 'U2R'], datasets: [{ label: 'Detections', data: [0, 0, 0, 0, 0], backgroundColor: ['#16a34a', '#dc2626', '#ea580c', '#f97316', '#0ea5e9'], borderRadius: 10, borderSkipped: false }] },
-          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: getTextColor() } } }, scales: { x: { ticks: { color: getMutedColor() }, grid: { color: getGridColor() } }, y: { beginAtZero: true, ticks: { color: getMutedColor() }, grid: { color: getGridColor() } } } }
+          options: { 
+            responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: getTextColor() } } }, scales: { x: { ticks: { color: getMutedColor() }, grid: { color: getGridColor() } }, y: { beginAtZero: true, ticks: { color: getMutedColor() }, grid: { color: getGridColor() } } },
+            onClick(evt, elements) { 
+              if (!elements || elements.length === 0) return; 
+              filterAndRouteToHistory(this.data.labels[elements[0].index]); 
+            }
+          }
         });
       }
     }
@@ -1126,7 +1181,10 @@
       if (state.liveSeries.length > 12) state.liveSeries.shift();
       dom.summaryTitle.textContent = next > 70 ? 'Traffic intensity rising. Hybrid engine is actively triaging samples.' : 'Hybrid detection running with session-backed control.';
       dom.summaryDescription.textContent = next > 70 ? 'Packet volume is elevated. Review the history pane and uploaded CSV findings for clustered anomalies.' : 'The dashboard synchronizes live detections, upload scans, and forensic history against the active model engine and threshold settings.';
-      updateCharts();
+      if (state.charts.trend) {
+        state.charts.trend.data.datasets[0].data = state.liveSeries;
+        state.charts.trend.update('none');
+      }
     }
 
     async function loadSession() {
@@ -1151,7 +1209,6 @@
       updateTopbarSubtitle();
       updateEngineBadges();
       updateThresholdDisplay();
-      updateCharts();
     }
 
     async function loadSettings() {
@@ -1161,6 +1218,7 @@
       state.settings.theme = settings.theme || state.settings.theme;
       state.settings.alert_threshold = Number(settings.alert_threshold ?? state.settings.alert_threshold);
       dom.settingsEngine.value = state.settings.engine;
+      if (dom.uploadEngineSelect) dom.uploadEngineSelect.value = state.settings.engine;
       dom.settingsTheme.value = state.settings.theme;
       dom.settingsThreshold.value = Number(state.settings.alert_threshold).toFixed(2);
       updateEngineBadges();
@@ -1176,11 +1234,15 @@
     }
 
     async function loadHistory() {
-      const response = await apiFetch('/api/history?limit=50');
+      const response = await apiFetch('/api/history?limit=500');
       state.history = Array.isArray(response.alerts) ? response.alerts.map(normalizeRecord) : [];
       renderHistoryTable(state.history);
       updateHistoryMetrics();
       updateThreatSummary();
+      if (state.charts.mix) {
+        state.charts.mix.data.datasets[0].data = Object.values(state.alertSeries);
+        state.charts.mix.update('none');
+      }
     }
     
     async function loadBlockedList() {
@@ -1221,24 +1283,62 @@
       } catch (error) { toast(error.message, 'error'); }
     }
     
-    async function exportForensicReport() {
+    // EXPORT MODAL LOGIC
+    const exportModal = document.getElementById('export-modal');
+    const exportCancel = document.getElementById('export-cancel');
+    const exportConfirm = document.getElementById('export-confirm');
+    const exportLimit = document.getElementById('export-limit');
+    const exportFilter = document.getElementById('export-filter');
+
+    function exportForensicReport() {
       if (state.history.length === 0) { toast('No history records to export.', 'error'); return; }
+      exportModal.classList.remove('hidden');
+    }
+
+    if(exportCancel) exportCancel.addEventListener('click', () => exportModal.classList.add('hidden'));
+    
+    if(exportConfirm) exportConfirm.addEventListener('click', async () => {
+      exportConfirm.disabled = true;
+      exportConfirm.textContent = "Generating...";
+      
       try {
+        const limitStr = exportLimit.value === 'all' ? '100000' : exportLimit.value;
+        const response = await apiFetch(`/api/history?limit=${limitStr}`);
+        let dataToExport = response.alerts.map(normalizeRecord);
+
+        if (exportFilter.value === 'threats') {
+          dataToExport = dataToExport.filter(r => r.classification !== 'Normal');
+        }
+
+        if (dataToExport.length === 0) {
+          toast('No records match your filters.', 'error');
+          exportModal.classList.add('hidden');
+          return;
+        }
+
         let csvContent = "data:text/csv;charset=utf-8,Timestamp,Source IP,Protocol,Classification,Confidence,Model Used\n";
-        state.history.forEach(r => {
+        dataToExport.forEach(r => {
           let conf = r.confidence ? (r.confidence * 100).toFixed(2) + '%' : '--';
           csvContent += `"${r.timestamp}","${r.sourceIP}","${r.protocol}","${r.classification}","${conf}","${r.model_used}"\n`;
         });
+        
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `iids_forensic_report_${new Date().toISOString().split('T')[0]}.csv`);
+        link.setAttribute("download", `IIDS_Report_${new Date().toISOString().split('T')[0]}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        toast('Forensic report downloaded!');
-      } catch (error) { toast(`Export failed: ${error.message}`, 'error'); }
-    }
+        
+        toast(`Successfully exported ${dataToExport.length} records.`);
+      } catch (error) {
+        toast(`Export failed: ${error.message}`, 'error');
+      } finally {
+        exportConfirm.disabled = false;
+        exportConfirm.textContent = "Generate CSV";
+        exportModal.classList.add('hidden');
+      }
+    });
 
     async function saveSettings() {
       const payload = { engine: dom.settingsEngine.value, theme: dom.settingsTheme.value, alert_threshold: Number(dom.settingsThreshold.value) };
@@ -1250,6 +1350,7 @@
         state.settings.theme = settings.theme || payload.theme;
         state.settings.alert_threshold = Number(settings.alert_threshold ?? payload.alert_threshold);
         dom.settingsEngine.value = state.settings.engine;
+        if (dom.uploadEngineSelect) dom.uploadEngineSelect.value = state.settings.engine;
         dom.settingsTheme.value = state.settings.theme;
         dom.settingsThreshold.value = Number(state.settings.alert_threshold).toFixed(2);
         applyTheme(state.settings.theme);
@@ -1278,13 +1379,53 @@
         dom.threatFootnote.textContent = `${state.threatEvents} threat events observed in this session.`;
       }
       state.history.unshift({ timestamp: data.timestamp, sourceIP: data.sourceIP, protocol: data.protocol, classification: data.classification, confidence: data.confidence, model_used: data.model_used });
-      state.history = state.history.slice(0, 50);
+      state.history = state.history.slice(0, 500);
       renderHistoryTable(state.history);
       updateHistoryMetrics();
       updateThreatSummary();
-      updateCharts();
+      
+      // Update Doughnut silently
+      if (state.charts.mix) {
+        state.charts.mix.data.datasets[0].data = Object.values(state.alertSeries);
+        state.charts.mix.update('none');
+      }
+
       if (manual) toast(`Live sample classified as ${record.classification}.`);
       return data;
+    }
+
+    async function scanUpload() {
+      if (!state.files.selected) { toast('Select a CSV file first.', 'error'); return; }
+      const formData = new FormData();
+      formData.append('file', state.files.selected);
+
+      const selectedEngine = dom.uploadEngineSelect ? dom.uploadEngineSelect.value : state.settings.engine;
+      formData.append('engine', selectedEngine);
+
+      dom.scanFile.disabled = true;
+      dom.uploadStatus.textContent = 'Scanning uploaded traffic...';
+      if (dom.downloadScanBtn) dom.downloadScanBtn.classList.add('hidden');
+
+      try {
+        const response = await apiFetch('/api/upload_scan', { method: 'POST', body: formData, headers: {} });
+        const breakdown = response.breakdown || {};
+        const values = ['Normal', 'DoS', 'Probe', 'R2L', 'U2R'].map((label) => Number(breakdown[label] || 0));
+
+        state.lastScanData = breakdown;
+
+        if (state.charts.upload) { state.charts.upload.data.datasets[0].data = values; state.charts.upload.update(); }
+        const totalThreats = values.slice(1).reduce((sum, value) => sum + value, 0);
+        dom.uploadStatus.textContent = `Scan complete. ${response.total} rows processed.`;
+        dom.uploadOutcome.textContent = totalThreats > 0 ? `${totalThreats} threats detected` : 'No threats detected';
+
+        if (dom.downloadScanBtn) dom.downloadScanBtn.classList.remove('hidden');
+
+        toast(`Scan complete via ${selectedEngine.toUpperCase()}`);
+        await loadHistory();
+      } catch (error) {
+        dom.uploadStatus.textContent = `Scan failed: ${error.message}`;
+        toast(error.message, 'error');
+      } finally { dom.scanFile.disabled = false; }
     }
 
     async function bootstrapApplication() {
@@ -1339,6 +1480,7 @@
       dom.navButtons.forEach((button) => button.classList.toggle('active', button.dataset.view === viewId));
     }
 
+    // 🚀 NEW: Robust Toggle that actively stops the clock
     function updateToggleState(button, key) {
       state.toggles[key] = !state.toggles[key];
       button.classList.toggle('on', state.toggles[key]);
@@ -1348,6 +1490,15 @@
          setStatusBadge(state.toggles.power);
          if(state.toggles.power) { startTimers(); toast('System Online.'); } 
          else { stopTimers(); toast('System Offline.', 'error'); }
+      }
+
+      if(key === 'autoRefresh') {
+         if(state.toggles.autoRefresh && state.toggles.power) {
+             startTimers();
+             toast('Auto-Refresh Resumed.');
+         } else {
+             stopTimers();
+         }
       }
     }
     
@@ -1376,10 +1527,55 @@
       if (dom.browseFile) dom.browseFile.addEventListener('click', () => dom.trafficFile.click());
       if (dom.clearFile) dom.clearFile.addEventListener('click', () => setSelectedFile(null));
       if (dom.scanFile) dom.scanFile.addEventListener('click', scanUpload);
+      if (dom.downloadScanBtn) {
+        dom.downloadScanBtn.addEventListener('click', () => {
+          if (!state.lastScanData) return;
+          let content = 'data:text/csv;charset=utf-8,Attack Class,Packet Count\n';
+          for (const [key, value] of Object.entries(state.lastScanData)) {
+            content += `${key},${value}\n`;
+          }
+          const encodedUri = encodeURI(content);
+          const link = document.createElement('a');
+          link.setAttribute('href', encodedUri);
+          link.setAttribute('download', `scan_summary_${new Date().getTime()}.csv`);
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          toast('Scan summary downloaded!');
+        });
+      }
       if (dom.liveSampleBtn) dom.liveSampleBtn.addEventListener('click', () => loadLiveFeed(true).catch((error) => toast(error.message, 'error')));
       if (dom.runLiveFeedBtn) dom.runLiveFeedBtn.addEventListener('click', () => loadLiveFeed(true).catch((error) => toast(error.message, 'error')));
-      if (dom.refreshDashboardBtn) dom.refreshDashboardBtn.addEventListener('click', () => Promise.all([loadStatus(), loadHistory(), loadProfile()]).catch((error) => toast(error.message, 'error')));
-      if (dom.refreshHistoryBtn) dom.refreshHistoryBtn.addEventListener('click', () => loadHistory().catch((error) => toast(error.message, 'error')));
+      
+      // 🚀 NEW: Robust Refresh Dashboard Button
+      if (dom.refreshDashboardBtn) {
+        dom.refreshDashboardBtn.addEventListener('click', async () => {
+          dom.refreshDashboardBtn.disabled = true;
+          dom.refreshDashboardBtn.textContent = 'Syncing...';
+          try {
+            await Promise.all([loadStatus(), loadHistory(), loadProfile()]);
+            toast('Dashboard synchronized with backend.');
+          } catch (error) {
+            toast(error.message, 'error');
+          } finally {
+            dom.refreshDashboardBtn.disabled = false;
+            dom.refreshDashboardBtn.textContent = 'Refresh Data';
+          }
+        });
+      }
+
+      // 🚀 NEW: Smart Refresh History Button
+      if (dom.refreshHistoryBtn) {
+        dom.refreshHistoryBtn.addEventListener('click', () => {
+          loadHistory().catch((error) => toast(error.message, 'error'));
+          // If auto-refresh was paused by clicking a chart, turn it back on safely!
+          if (!state.toggles.autoRefresh) {
+            dom.toggleAutoRefresh.click(); 
+          }
+          toast('History cleared and Live Feed resumed.');
+        });
+      }
+
       if (dom.saveSettings) dom.saveSettings.addEventListener('click', () => saveSettings().catch((error) => toast(error.message, 'error')));
       if (dom.resetSettings) dom.resetSettings.addEventListener('click', () => { dom.settingsEngine.value = state.settings.engine; dom.settingsTheme.value = state.settings.theme; dom.settingsThreshold.value = Number(state.settings.alert_threshold).toFixed(2); updateThresholdDisplay(); });
       
@@ -1446,10 +1642,27 @@
     function setSelectedFile(file) {
       state.files.selected = file;
       if (!file) {
-        dom.uploadMeta.classList.add('hidden'); dom.scanFile.disabled = true; dom.uploadStatus.textContent = 'Awaiting CSV input'; dom.fileName.textContent = 'No file selected'; dom.fileSize.textContent = '0 B'; dom.trafficFile.value = '';
+        dom.uploadMeta.classList.add('hidden'); 
+        dom.scanFile.disabled = true; 
+        dom.uploadStatus.textContent = 'Awaiting CSV input'; 
+        if (dom.uploadOutcome) dom.uploadOutcome.textContent = 'No action yet';
+        dom.fileName.textContent = 'No file selected'; 
+        dom.fileSize.textContent = '0 B'; 
+        dom.trafficFile.value = ''; 
+        
+        if(dom.downloadScanBtn) dom.downloadScanBtn.classList.add('hidden');
+        
+        if (state.charts.upload) {
+            state.charts.upload.data.datasets[0].data = [0, 0, 0, 0, 0];
+            state.charts.upload.update();
+        }
         return;
       }
-      dom.uploadMeta.classList.remove('hidden'); dom.scanFile.disabled = false; dom.uploadStatus.textContent = `Selected ${file.name}`; dom.fileName.textContent = file.name; dom.fileSize.textContent = formatBytes(file.size);
+      dom.uploadMeta.classList.remove('hidden'); 
+      dom.scanFile.disabled = false; 
+      dom.uploadStatus.textContent = `Selected ${file.name}`; 
+      dom.fileName.textContent = file.name; 
+      dom.fileSize.textContent = formatBytes(file.size);
     }
 
     function assistantScrollToBottom() { dom.assistantThread.scrollTop = dom.assistantThread.scrollHeight; }
@@ -1556,24 +1769,6 @@
           }
         }
       });
-    }
-
-    async function scanUpload() {
-      if (!state.files.selected) { toast('Select a CSV file first.', 'error'); return; }
-      const formData = new FormData(); formData.append('file', state.files.selected); formData.append('engine', state.settings.engine);
-      dom.scanFile.disabled = true; dom.uploadStatus.textContent = 'Scanning uploaded traffic...';
-      try {
-        const response = await apiFetch('/api/upload_scan', { method: 'POST', body: formData, headers: {} });
-        const breakdown = response.breakdown || {};
-        const values = ['Normal', 'DoS', 'Probe', 'R2L', 'U2R'].map((label) => Number(breakdown[label] || 0));
-        if (state.charts.upload) { state.charts.upload.data.datasets[0].data = values; state.charts.upload.update(); }
-        const totalThreats = values.slice(1).reduce((sum, value) => sum + value, 0);
-        dom.uploadStatus.textContent = `Scan complete. ${response.total} rows processed.`;
-        dom.uploadOutcome.textContent = totalThreats > 0 ? `${totalThreats} threats detected` : 'No threats detected';
-        toast(`Scan complete: ${response.total} rows processed.`);
-        await loadHistory();
-      } catch (error) { dom.uploadStatus.textContent = `Scan failed: ${error.message}`; toast(error.message, 'error'); } 
-      finally { dom.scanFile.disabled = false; }
     }
 
     function initClock() {
