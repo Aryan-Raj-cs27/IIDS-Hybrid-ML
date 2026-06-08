@@ -12,10 +12,12 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, classification_report
+from sklearn.metrics import accuracy_score, auc, balanced_accuracy_score, classification_report, confusion_matrix, roc_curve
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder, StandardScaler, label_binarize
 from sklearn.utils.class_weight import compute_class_weight
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.layers import BatchNormalization, Conv1D, Dense, Dropout, LSTM, MaxPooling1D
@@ -28,6 +30,9 @@ DATA_PATH = BASE_DIR.parent / "data" / "KDDTrain+_20Percent.txt"
 SCALER_PATH = BASE_DIR / "scaler.pkl"
 RF_MODEL_PATH = BASE_DIR / "rf_model.pkl"
 CNN_LSTM_MODEL_PATH = BASE_DIR / "cnn_lstm_model.h5"
+RF_CONFUSION_MATRIX_PATH = BASE_DIR / "rf_confusion_matrix.png"
+CNN_LSTM_CONFUSION_MATRIX_PATH = BASE_DIR / "cnn_lstm_confusion_matrix.png"
+ROC_CURVE_PATH = BASE_DIR / "roc_curve.png"
 
 
 NSL_KDD_COLUMNS = [
@@ -162,6 +167,67 @@ def preprocess_data(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, Standar
 	return scaled_features, encoded_target, scaler, target_encoder
 
 
+def save_confusion_matrix_plot(
+	y_true: np.ndarray,
+	y_pred: np.ndarray,
+	class_names: list[str],
+	output_path: Path,
+	title: str,
+) -> None:
+	"""Save a labeled confusion matrix figure for reporting."""
+
+	matrix = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
+	plt.figure(figsize=(8, 6))
+	sns.heatmap(
+		matrix,
+		annot=True,
+		fmt="d",
+		cmap="Blues",
+		xticklabels=class_names,
+		yticklabels=class_names,
+	)
+	plt.xlabel("Predicted Label")
+	plt.ylabel("True Label")
+	plt.title(title)
+	plt.tight_layout()
+	plt.savefig(output_path, dpi=300)
+	plt.close()
+
+
+def save_roc_curve_plot(
+	y_true: np.ndarray,
+	y_score: np.ndarray,
+	class_names: list[str],
+	output_path: Path,
+	title: str,
+) -> None:
+	"""Save a multiclass ROC curve plot using one-vs-rest evaluation."""
+
+	y_true_binarized = label_binarize(y_true, classes=list(range(len(class_names))))
+	if y_true_binarized.shape[1] != len(class_names):
+		raise ValueError("ROC plot requires all classes to be represented in the evaluation labels.")
+
+	plt.figure(figsize=(9, 7))
+	for class_index, class_name in enumerate(class_names):
+		fpr, tpr, _ = roc_curve(y_true_binarized[:, class_index], y_score[:, class_index])
+		roc_auc = auc(fpr, tpr)
+		plt.plot(fpr, tpr, lw=2, label=f"{class_name} (AUC = {roc_auc:.4f})")
+
+	micro_fpr, micro_tpr, _ = roc_curve(y_true_binarized.ravel(), y_score.ravel())
+	micro_auc = auc(micro_fpr, micro_tpr)
+	plt.plot(micro_fpr, micro_tpr, linestyle="--", color="black", lw=2, label=f"Micro-average (AUC = {micro_auc:.4f})")
+	plt.plot([0, 1], [0, 1], linestyle=":", color="gray", lw=1.5)
+	plt.xlim([0.0, 1.0])
+	plt.ylim([0.0, 1.05])
+	plt.xlabel("False Positive Rate")
+	plt.ylabel("True Positive Rate")
+	plt.title(title)
+	plt.legend(loc="lower right", fontsize=9)
+	plt.tight_layout()
+	plt.savefig(output_path, dpi=300)
+	plt.close()
+
+
 def encode_feature_frame(features: pd.DataFrame, reference_columns: list[str] | None = None) -> pd.DataFrame:
 	"""One-hot encode NSL-KDD categorical fields and align the result to a schema."""
 
@@ -171,7 +237,13 @@ def encode_feature_frame(features: pd.DataFrame, reference_columns: list[str] | 
 	return encoded
 
 
-def train_rf(x_train: np.ndarray, x_test: np.ndarray, y_train: np.ndarray, y_test: np.ndarray) -> RandomForestClassifier:
+def train_rf(
+	x_train: np.ndarray,
+	x_test: np.ndarray,
+	y_train: np.ndarray,
+	y_test: np.ndarray,
+	class_names: list[str],
+) -> RandomForestClassifier:
 	"""Train and evaluate the Random Forest baseline model."""
 
 	rf_model = RandomForestClassifier(
@@ -189,7 +261,8 @@ def train_rf(x_train: np.ndarray, x_test: np.ndarray, y_train: np.ndarray, y_tes
 	balanced_accuracy = balanced_accuracy_score(y_test, predictions)
 	print(f"Random Forest Accuracy: {accuracy:.4f}")
 	print(f"Random Forest Balanced Accuracy: {balanced_accuracy:.4f}")
-	print(classification_report(y_test, predictions, digits=4))
+	print(classification_report(y_test, predictions, labels=list(range(len(class_names))), target_names=class_names, digits=4))
+	save_confusion_matrix_plot(y_test, predictions, class_names, RF_CONFUSION_MATRIX_PATH, "Random Forest Confusion Matrix")
 
 	joblib.dump(rf_model, RF_MODEL_PATH)
 	return rf_model
@@ -232,13 +305,17 @@ def build_cnn_lstm_model(input_shape: tuple[int, int]) -> Sequential:
 
 def train_cnnlstm(
 	x_train: np.ndarray,
+	x_validation: np.ndarray,
 	x_test: np.ndarray,
 	y_train: np.ndarray,
+	y_validation: np.ndarray,
 	y_test: np.ndarray,
+	class_names: list[str],
 ) -> Sequential:
 	"""Train and save the CNN-LSTM deep learning model."""
 
 	x_train_reshaped = reshape_for_dl(x_train)
+	x_validation_reshaped = reshape_for_dl(x_validation)
 	x_test_reshaped = reshape_for_dl(x_test)
 
 	class_weights_array = compute_class_weight(
@@ -277,15 +354,20 @@ def train_cnnlstm(
 		y_train,
 		epochs=200,
 		batch_size=128,
-		validation_data=(x_test_reshaped, y_test),
+		validation_data=(x_validation_reshaped, y_validation),
 		callbacks=[early_stop, reduce_lr, checkpoint],
 		class_weight=class_weights,
 		verbose=1,
 	)
 
 	evaluation_loss, evaluation_accuracy = model.evaluate(x_test_reshaped, y_test, verbose=0)
+	prediction_probabilities = model.predict(x_test_reshaped, verbose=0)
+	predictions = np.argmax(prediction_probabilities, axis=1)
 	print(f"CNN-LSTM Accuracy: {evaluation_accuracy:.4f}")
 	print(f"CNN-LSTM Loss: {evaluation_loss:.4f}")
+	print(classification_report(y_test, predictions, labels=list(range(len(class_names))), target_names=class_names, digits=4))
+	save_confusion_matrix_plot(y_test, predictions, class_names, CNN_LSTM_CONFUSION_MATRIX_PATH, "CNN-LSTM Confusion Matrix")
+	save_roc_curve_plot(y_test, prediction_probabilities, class_names, ROC_CURVE_PATH, "CNN-LSTM ROC Curve")
 
 	model.save(CNN_LSTM_MODEL_PATH)
 	return model
@@ -302,7 +384,7 @@ def run_pipeline() -> None:
 		unknown_labels = sorted(raw_data.loc[processed["label"].isna(), "label"].astype(str).unique())
 		raise ValueError(f"Unmapped NSL-KDD attack labels found: {unknown_labels}")
 
-	features = processed.drop(columns=["label", "difficulty"])
+	features = processed.drop(columns=["label"])
 	target = processed["label"]
 
 	train_features, test_features, y_train, y_test = train_test_split(
@@ -334,12 +416,13 @@ def run_pipeline() -> None:
 	y_train_encoded = target_encoder.fit_transform(y_train)
 	y_validation_encoded = target_encoder.transform(y_validation)
 	y_test_encoded = target_encoder.transform(y_test)
+	class_names = list(target_encoder.classes_)
 
 	print("Training Random Forest baseline...")
-	train_rf(x_train, x_test, y_train_encoded, y_test_encoded)
+	train_rf(x_train, x_test, y_train_encoded, y_test_encoded, class_names)
 
 	print("Training CNN-LSTM hybrid model...")
-	train_cnnlstm(x_train, x_validation, y_train_encoded, y_validation_encoded)
+	train_cnnlstm(x_train, x_validation, x_test, y_train_encoded, y_validation_encoded, y_test_encoded, class_names)
 
 	print("Pipeline completed successfully.")
 
