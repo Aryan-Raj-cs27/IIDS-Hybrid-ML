@@ -10,6 +10,9 @@ secret_keys.txt
 secrets.json
 credentials.json
 .vscode/
+.cursorrules
+.cursorignore
+.cursorindexingignore
 
 ## 2. DATABASES & PERSISTENT STORAGE
 *.db

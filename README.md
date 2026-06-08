@@ -5,7 +5,29 @@
 ![Flask](https://img.shields.io/badge/Flask-3.0+-green?logo=flask)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
-> **An enterprise-grade hybrid machine learning system for real-time network intrusion detection combining Random Forest and CNN-LSTM models with forensic logging and threat response capabilities.**
+> **A production-ready hybrid ML intrusion detection platform with real-time inference, forensic logging, and an operations-focused dashboard.**
+
+## Project Status
+
+- Status: Complete
+- Readiness: Production-ready
+- Primary deployment target: [Render](https://render.com) (public URL pending)
+- Stack focus: Python ML backend + browser-based operations console
+
+## Architecture Snapshot
+
+IIDS uses a lightweight web frontend for operator workflows, a Flask API for inference and history, and a dual-model ML pipeline for classification. Data moves from the dashboard or API into preprocessing, then through Random Forest or CNN-LSTM inference, and finally into SQLite-backed forensic logging.
+
+## Tech Stack
+
+- Python 3.13+
+- Flask 3.x
+- TensorFlow 2.x
+- scikit-learn
+- Pandas and NumPy
+- SQLite
+- Vanilla JavaScript frontend
+- Chart.js for visualization
 
 ## 📋 Table of Contents
 
@@ -26,7 +48,7 @@
 
 ## 🎯 Overview
 
-IIDS is a production-ready intrusion detection system that leverages hybrid machine learning models to identify and classify network attacks with high accuracy. The system processes NSL-KDD dataset features and provides real-time threat detection, forensic logging, and actionable security responses.
+IIDS is a production-grade intrusion detection system that combines a fast baseline model with a sequence-aware deep learning model to classify network traffic and preserve every detection in a local forensic store. The project is organized for maintainability, demo readiness, and future deployment hardening.
 
 ### Key Capabilities
 
